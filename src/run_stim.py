@@ -43,10 +43,10 @@ CONDITION_MAP = {
 
 CONDITIONS = [1, 2, 3, 4]
 
-RAMP_DURATION = 2     # seconds for amplitude ramp-up and ramp-down
-STIM_DURATION = 5    # seconds at target amplitude per rep
-REST_DURATION = 5    # seconds of rest between reps
-REPETITIONS   = 2     # ramp-up / hold / ramp-down cycles per condition
+RAMP_DURATION = 10     # seconds for amplitude ramp-up and ramp-down
+STIM_DURATION = 30    # seconds at target amplitude per rep
+REST_DURATION = 15    # seconds of rest between reps
+REPETITIONS   = 3     # ramp-up / hold / ramp-down cycles per condition
 
 # ── Safety ────────────────────────────────────────────────────────────────
 
