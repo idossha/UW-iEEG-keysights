@@ -21,7 +21,7 @@ DEVICE_RESOURCE = 'USB0::10893::36097::CN61310059::0::INSTR'
 USE_PYVISA_PY = True
 
 # Set True to run without hardware (prints commands instead of sending them).
-MOCK_MODE = False
+MOCK_MODE = True
 
 # ── Condition library ─────────────────────────────────────────────────────
 #
@@ -43,10 +43,10 @@ CONDITION_MAP = {
 
 CONDITIONS = [1, 2, 3, 4]
 
-RAMP_DURATION = 5     # seconds for amplitude ramp-up and ramp-down
-STIM_DURATION = 10    # seconds at target amplitude per rep
-REST_DURATION = 10    # seconds of rest between reps
-REPETITIONS   = 3     # ramp-up / hold / ramp-down cycles per condition
+RAMP_DURATION = 2     # seconds for amplitude ramp-up and ramp-down
+STIM_DURATION = 5    # seconds at target amplitude per rep
+REST_DURATION = 5    # seconds of rest between reps
+REPETITIONS   = 2     # ramp-up / hold / ramp-down cycles per condition
 
 # ── Safety ────────────────────────────────────────────────────────────────
 

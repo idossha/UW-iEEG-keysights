@@ -15,6 +15,8 @@ import pyvisa as visa
 from pynput import keyboard as pynput_keyboard
 
 
+from lib.logger import open_log, log
+
 # ── Mock device (for testing without hardware) ─────────────────────────────
 
 class _MockDevice:
@@ -129,6 +131,13 @@ def run(
         print(f'\033[1;31m[ABORT] Amplitude exceeds safety limit of {safety_limit_ma} mA.\033[0m')
         sys.exit(1)
 
+    # --- Logger ---
+    _log_file, _writer = open_log()
+
+    log(_writer, 'session_start',
+        f'condtions={len(conditions)} reps={repetitions} '
+        f'ramp={ramp_duration}s stim={stim_duration}s res{rest_duration}s')
+
     # --- Summary ---
     print(f'\n\033[96m{"─" * 60}')
     print(f'  Keysight EDU Stimulation Controller{"  [MOCK]" if mock_mode else ""}')
@@ -202,6 +211,9 @@ def run(
         print(f'\n\033[96m  Condition {cond_idx + 1}/{len(conditions)}: '
               f'{f1} Hz + {f2} Hz  →  {beat_hz} Hz envelope  |  {a1}/{a2} mA\033[0m')
 
+        log(_writer, 'condition_start', 
+            f'cond={cond_idx+1} f1={f1} f2={f2} a1={a1} a2={a2} beat={beat_hz}Hz')
+
         _device.write(f'SOUR1:FREQ {f1}')
         _device.write(f'SOUR2:FREQ {f2}')
         _device.write('*WAI')
@@ -209,6 +221,7 @@ def run(
         for rep in range(repetitions):
             ts = datetime.datetime.now().strftime('%H:%M:%S')
             print(f'  Rep {rep + 1}/{repetitions}  @  {ts}')
+            log(_writer, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
 
             _device.write('SYSTem:BEEPer:IMMediate')
             _device.write('*TRG')
@@ -227,6 +240,8 @@ def run(
                 voltages = [v1, v2]
 
             voltages = _ramp(_device, voltages, [0.0, 0.0], ramp_duration)
+
+            log(_writer, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
             print(f'\r  ↓ Ramp down complete              ')
 
             is_last = (cond_idx == len(conditions) - 1) and (rep == repetitions - 1)
@@ -236,6 +251,8 @@ def run(
 
     # --- Done ---
     elapsed = time.time() - t_start
+
+    log(_writer, 'session_end', f'total_time={elapsed:.1f}s')
     print(f'\n\033[32m  Stimulation complete.  Total time: {elapsed:.1f} s\033[0m')
 
     for _ in range(3):
