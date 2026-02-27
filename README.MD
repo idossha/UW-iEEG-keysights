@@ -4,11 +4,6 @@ Python controller for Keysight EDU-series dual-channel function generators, used
 
 ---
 
-## How it works
-
-Two channels on the same device output sinusoidal signals at slightly different frequencies (e.g. 8000 Hz and 8130 Hz). Their interference at the electrode creates an amplitude-modulated envelope at the beat frequency (130 Hz in that example), which is the therapeutically relevant signal. Each stimulation block ramps amplitude up linearly, holds at the target for a set duration, then ramps back down.
-
----
 
 ## Setup
 
