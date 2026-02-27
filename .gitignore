@@ -1,0 +1,10 @@
+*.pyc
+__pycache__/
+.venv/
+Duke_Thalam.py
+testerss.py
+/logs
+/metadata
+*.xlsx
+cfg/participant_conditions_path.txt
+.DS_Store
