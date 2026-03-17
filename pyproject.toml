@@ -5,11 +5,13 @@ requires-python = ">=3.10"
 dependencies = [
     "matplotlib>=3.7",
     "numpy>=1.24",
-    "pynput>=1.7",
     "pyusb>=1.2",       # USB backend for pyvisa-py on macOS / Linux
     "psutil>=5.9",      # suppresses pyvisa-py TCPIP interface warning
     "pyvisa>=1.14",
     "pyvisa-py>=0.7",
     "zeroconf>=0.38",   # suppresses pyvisa-py hislip discovery warning
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
 

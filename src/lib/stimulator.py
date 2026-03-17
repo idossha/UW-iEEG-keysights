@@ -7,15 +7,18 @@ configured in run_stim.py.
 
 import os
 import sys
+import select
+import signal
+import termios
+import threading
 import time
+import tty
 import datetime
 
 import numpy as np
 import pyvisa as visa
-from pynput import keyboard as pynput_keyboard
 
-
-from lib.logger import open_log, log
+from lib.logger import open_log, log, close_log
 
 # ── Mock device (for testing without hardware) ─────────────────────────────
 
@@ -31,13 +34,23 @@ class _MockDevice:
 
 # ── Internal state ─────────────────────────────────────────────────────────
 
-_device = None   # set on connect; read by the emergency-stop callback
+_device    = None   # set on connect; read by the emergency-stop callback
+_log_file  = None   # set when log is opened; closed on emergency stop
+_writer    = None   # csv writer for the active log
 
 
 # ── Emergency stop ─────────────────────────────────────────────────────────
 
 def _emergency_stop():
+    _restore_terminal()
     print("\n\033[1;31mEMERGENCY STOP — ESC pressed\033[0m")
+    # Log the abort event before tearing down
+    if _writer is not None and _log_file is not None:
+        try:
+            log(_writer, _log_file, 'session_abort', 'emergency_stop')
+        except Exception:
+            pass
+    close_log(_log_file)
     if _device is not None:
         try:
             _device.write(':OUTPut1:STATe 0')
@@ -50,11 +63,64 @@ def _emergency_stop():
     os._exit(1)
 
 
+_orig_term_attrs = None   # saved terminal settings, restored on exit
+
+
 def _start_keyboard_listener():
-    def on_press(key):
-        if key == pynput_keyboard.Key.esc:
-            _emergency_stop()
-    pynput_keyboard.Listener(on_press=on_press, daemon=True).start()
+    """
+    Spawn a daemon thread that reads raw stdin for ESC (0x1b).
+    Also installs a SIGINT handler so Ctrl+C triggers the same emergency stop.
+    Uses termios/tty (no accessibility permissions required on macOS).
+    """
+    global _orig_term_attrs
+
+    # --- Ctrl+C handler ---
+    def _sigint_handler(signum, frame):
+        _emergency_stop()
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    # --- ESC via raw stdin ---
+    if not sys.stdin.isatty():
+        return  # no terminal to read from (e.g. piped input, CI)
+
+    _orig_term_attrs = termios.tcgetattr(sys.stdin)
+    tty.setcbreak(sys.stdin.fileno())   # char-at-a-time, no echo
+
+    def _reader():
+        try:
+            while True:
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch == '\x1b':   # ESC
+                        _emergency_stop()
+        except Exception:
+            pass
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+
+def _restore_terminal():
+    """Restore terminal to its original mode (called on clean exit)."""
+    global _orig_term_attrs
+    if _orig_term_attrs is not None:
+        try:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, _orig_term_attrs)
+        except Exception:
+            pass
+        _orig_term_attrs = None
+
+
+# ── Interruptible sleep ────────────────────────────────────────────────────
+
+def _interruptible_sleep(duration, mock_mode):
+    """
+    Sleep for `duration` seconds in real mode.
+    In mock mode, yield briefly so the keyboard-listener thread can fire.
+    """
+    if mock_mode:
+        time.sleep(0)          # context-switch to listener thread
+    else:
+        time.sleep(duration)
 
 
 # ── Device helpers ─────────────────────────────────────────────────────────
@@ -91,7 +157,7 @@ def _ramp(dev, current_v, target_v, duration):
     Linearly ramp both channel voltages from current_v → target_v over `duration` s.
     Modifies current_v in-place (100 ms steps) and returns it.
     """
-    n_steps = int(duration * 10)
+    n_steps = max(1, int(duration * 10))
     delta   = [(target_v[i] - current_v[i]) / n_steps for i in range(2)]
     arrow   = '↑' if delta[0] >= 0 else '↓'
     spinner = ['◜', '◝', '◞', '◟']
@@ -110,7 +176,7 @@ def _ramp(dev, current_v, target_v, duration):
 # ── Protocol: Sine Stim ───────────────────────────────────────────────────
 
 def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
-                       rest_duration, repetitions, mock_mode, writer):
+                       rest_duration, repetitions, mock_mode, writer, log_file):
     """Beat-frequency amplitude modulation protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
@@ -123,7 +189,7 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
         print(f'\n\033[96m  Condition {cond_idx + 1}/{len(conditions)}: '
               f'{f1} Hz + {f2} Hz  →  {beat_hz} Hz envelope  |  {a1}/{a2} mA\033[0m')
 
-        log(writer, 'condition_start',
+        log(writer, log_file, 'condition_start',
             f'cond={cond_idx+1} f1={f1} f2={f2} a1={a1} a2={a2} beat={beat_hz}Hz')
 
         dev.write(f'SOUR1:FREQ {f1}')
@@ -133,7 +199,7 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
         for rep in range(repetitions):
             ts = datetime.datetime.now().strftime('%H:%M:%S')
             print(f'  Rep {rep + 1}/{repetitions}  @  {ts}')
-            log(writer, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
+            log(writer, log_file, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
 
             dev.write('SYSTem:BEEPer:IMMediate')
             dev.write('*TRG')
@@ -141,9 +207,9 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
             voltages = _ramp(dev, voltages, target, ramp_duration)
             print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
 
-            if not mock_mode:
-                time.sleep(stim_duration)
+            _interruptible_sleep(stim_duration, mock_mode)
 
+            if not mock_mode:
                 v1 = float(dev.query('SOUR1:VOLT?'))
                 v2 = float(dev.query('SOUR2:VOLT?'))
                 if not np.allclose([v1, v2], voltages, atol=0.01):
@@ -153,13 +219,13 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
 
             voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
 
-            log(writer, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
+            log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
             print(f'\r  ↓ Ramp down complete              ')
 
             is_last = (cond_idx == len(conditions) - 1) and (rep == repetitions - 1)
-            if not is_last and not mock_mode:
+            if not is_last:
                 print(f'  ⏸  Rest {rest_duration} s …')
-                time.sleep(rest_duration)
+                _interruptible_sleep(rest_duration, mock_mode)
 
     return time.time() - t_start
 
@@ -167,7 +233,7 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
 # ── Protocol: Phase Stim ──────────────────────────────────────────────────
 
 def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
-                        repetitions, mock_mode, writer):
+                        repetitions, mock_mode, writer, log_file):
     """Phase-modulation pulse delivery protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
@@ -188,7 +254,7 @@ def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
               f'{num_pulses} pulses @ {pulse_freq} Hz  |  '
               f'pw={actual_pw*1000:.2f} ms  |  train={train_dur:.1f} s\033[0m')
 
-        log(writer, 'condition_start',
+        log(writer, log_file, 'condition_start',
             f'cond={cond_idx+1} carrier={carrier_freq} a1={a1} a2={a2} '
             f'pw={actual_pw} n_pulses={num_pulses} pulse_freq={pulse_freq}')
 
@@ -205,7 +271,7 @@ def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
         for rep in range(repetitions):
             ts = datetime.datetime.now().strftime('%H:%M:%S')
             print(f'  Rep {rep + 1}/{repetitions}  @  {ts}')
-            log(writer, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
+            log(writer, log_file, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
 
             # ramp up
             dev.write('SYSTem:BEEPer:IMMediate')
@@ -219,22 +285,21 @@ def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
                 if (p + 1) % max(1, num_pulses // 10) == 0 or p == num_pulses - 1:
                     sys.stdout.write(f'\r  ⚡ Pulse {p + 1}/{num_pulses}  ')
                     sys.stdout.flush()
-                log(writer, 'pulse', f'cond={cond_idx+1} rep={rep+1} pulse={p+1}')
-                if not mock_mode:
-                    time.sleep(pulse_interval)
+                log(writer, log_file, 'pulse', f'cond={cond_idx+1} rep={rep+1} pulse={p+1}')
+                _interruptible_sleep(pulse_interval, mock_mode)
             print()
 
-            log(writer, 'pulse_train_done', f'cond={cond_idx+1} rep={rep+1}')
+            log(writer, log_file, 'pulse_train_done', f'cond={cond_idx+1} rep={rep+1}')
 
             # ramp down
             voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
-            log(writer, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
+            log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
             print(f'\r  ↓ Ramp down complete              ')
 
             is_last = (cond_idx == len(conditions) - 1) and (rep == repetitions - 1)
-            if not is_last and not mock_mode:
+            if not is_last:
                 print(f'  ⏸  Rest {rest_duration} s …')
-                time.sleep(rest_duration)
+                _interruptible_sleep(rest_duration, mock_mode)
 
     return time.time() - t_start
 
@@ -271,7 +336,7 @@ def run(
     use_pyvisa_py    : True = pyvisa-py backend (macOS/Linux), False = NI-VISA
     mock_mode        : True = run without hardware (for testing)
     """
-    global _device
+    global _device, _log_file, _writer
 
     if mode not in ('sine', 'phase'):
         print(f'\033[1;31m[ABORT] Unknown mode: {mode!r}. Use "sine" or "phase".\033[0m')
@@ -301,117 +366,127 @@ def run(
     # --- Logger ---
     _log_file, _writer = open_log()
 
-    log(_writer, 'session_start',
-        f'mode={mode} conditions={len(conditions)} reps={repetitions} '
-        f'ramp={ramp_duration}s rest={rest_duration}s')
+    try:
+        log(_writer, _log_file, 'session_start',
+            f'mode={mode} conditions={len(conditions)} reps={repetitions} '
+            f'ramp={ramp_duration}s rest={rest_duration}s')
 
-    # --- Summary ---
-    print(f'\n\033[96m{"─" * 60}')
-    print(f'  Keysight EDU Stimulation Controller{"  [MOCK]" if mock_mode else ""}')
-    print(f'{"─" * 60}\033[0m')
-    print(f'  Mode        : {"Sine (beat frequency)" if mode == "sine" else "Phase (pulse delivery)"}')
-    print(f'  Conditions  : {len(conditions)}')
-    print(f'  Repetitions : {repetitions} per condition')
+        # --- Summary ---
+        print(f'\n\033[96m{"─" * 60}')
+        print(f'  Keysight EDU Stimulation Controller{"  [MOCK]" if mock_mode else ""}')
+        print(f'{"─" * 60}\033[0m')
+        print(f'  Mode        : {"Sine (beat frequency)" if mode == "sine" else "Phase (pulse delivery)"}')
+        print(f'  Conditions  : {len(conditions)}')
+        print(f'  Repetitions : {repetitions} per condition')
 
-    if mode == 'sine':
-        print(f'  Ramp        : {ramp_duration} s  |  Stim: {stim_duration} s  |  Rest: {rest_duration} s')
-        print(f'  Amplitudes  : {all_amps} mA')
-    else:
-        print(f'  Ramp        : {ramp_duration} s  |  Rest: {rest_duration} s')
-        for i, con in enumerate(conditions):
-            carrier, a1, a2, pw, n_p, p_freq = con
-            print(f'  Cond {i+1}      : {carrier} Hz  {a1}/{a2} mA  '
-                  f'{n_p} pulses @ {p_freq} Hz  pw={pw*1000:.2f} ms')
+        if mode == 'sine':
+            print(f'  Ramp        : {ramp_duration} s  |  Stim: {stim_duration} s  |  Rest: {rest_duration} s')
+            print(f'  Amplitudes  : {all_amps} mA')
+        else:
+            print(f'  Ramp        : {ramp_duration} s  |  Rest: {rest_duration} s')
+            for i, con in enumerate(conditions):
+                carrier, a1, a2, pw, n_p, p_freq = con
+                print(f'  Cond {i+1}      : {carrier} Hz  {a1}/{a2} mA  '
+                      f'{n_p} pulses @ {p_freq} Hz  pw={pw*1000:.2f} ms')
 
-    # --- Connect ---
-    if mock_mode:
-        _device = _MockDevice()
-        print('\n\033[33m  [Mock mode] No hardware will be used.\033[0m')
-    else:
-        rm = visa.ResourceManager('@py') if use_pyvisa_py else visa.ResourceManager()
-        print(f'\n  Available resources: {rm.list_resources()}')
-        _device = rm.open_resource(device_resource)
-        _device.write('*CLS')
-        _device.write('*WAI')
-        time.sleep(1)
-        print('\033[32m  Device connected.\033[0m')
-
-    # --- Keyboard listener (ESC = emergency stop) ---
-    _start_keyboard_listener()
-    print('\033[32m  [ESC] emergency stop active.\033[0m\n')
-
-    # --- Configure device ---
-    if mode == 'sine':
-        _setup_sine(_device)
-
-        for ch in (1, 2):
-            _device.write(f':TRIGger{ch}:SOURce BUS')
-        _device.write(':OUTPut1:TRIGger:STATe 1')
-        if not mock_mode:
+        # --- Connect ---
+        if mock_mode:
+            _device = _MockDevice()
+            print('\n\033[33m  [Mock mode] No hardware will be used.\033[0m')
+        else:
+            rm = visa.ResourceManager('@py') if use_pyvisa_py else visa.ResourceManager()
+            print(f'\n  Available resources: {rm.list_resources()}')
+            _device = rm.open_resource(device_resource)
+            _device.write('*CLS')
+            _device.write('*WAI')
             time.sleep(1)
+            print('\033[32m  Device connected.\033[0m')
 
-        for ch in (1, 2):
-            _device.write(f':SOURce{ch}:VOLTage:LIMit:HIGH  {voltage_limit:G}')
-            _device.write(f':SOURce{ch}:VOLTage:LIMit:LOW  -{voltage_limit:G}')
-            _device.write(f':SOURce{ch}:VOLTage:LIMit:STATe 1')
-            _device.write(f':SOURce{ch}:VOLTage 0.01')
-            _device.write(f':OUTPut{ch}:STATe ON')
+        # --- Configure device ---
+        if mode == 'sine':
+            _setup_sine(_device)
 
-        _device.write(f'SOUR1:FREQ {conditions[0][0]}')
-        _device.write(f'SOUR2:FREQ {conditions[0][1]}')
+            for ch in (1, 2):
+                _device.write(f':TRIGger{ch}:SOURce BUS')
+            _device.write(':OUTPut1:TRIGger:STATe 1')
+            if not mock_mode:
+                time.sleep(1)
+
+            for ch in (1, 2):
+                _device.write(f':SOURce{ch}:VOLTage:LIMit:HIGH  {voltage_limit:G}')
+                _device.write(f':SOURce{ch}:VOLTage:LIMit:LOW  -{voltage_limit:G}')
+                _device.write(f':SOURce{ch}:VOLTage:LIMit:STATe 1')
+                _device.write(f':SOURce{ch}:VOLTage 0.01')
+                _device.write(f':OUTPut{ch}:STATe ON')
+
+            _device.write(f'SOUR1:FREQ {conditions[0][0]}')
+            _device.write(f'SOUR2:FREQ {conditions[0][1]}')
+            _device.write('*WAI')
+            if not mock_mode:
+                time.sleep(0.5)
+
+        elif mode == 'phase':
+            # initial setup with first condition's params (reconfigured per-condition)
+            c = conditions[0]
+            n_cyc = max(1, round(c[3] * c[0]))
+            _setup_phase(_device, c[0], n_cyc)
+
+            for ch in (1, 2):
+                _device.write(f':SOURce{ch}:VOLTage:LIMit:HIGH  {voltage_limit:G}')
+                _device.write(f':SOURce{ch}:VOLTage:LIMit:LOW  -{voltage_limit:G}')
+                _device.write(f':SOURce{ch}:VOLTage:LIMit:STATe 1')
+
+            if not mock_mode:
+                time.sleep(0.5)
+
+        # --- User confirmation ---
+        if input(f'  About to run {len(conditions)} condition(s). Continue? [y/n]: ').strip() != 'y':
+            log(_writer, _log_file, 'session_abort', 'user_cancelled_before_start')
+            _device.write(':OUTPut1:STATe 0')
+            _device.write(':OUTPut2:STATe 0')
+            _device.close()
+            return
+
+        if input('  Launch STIMULATION [y/n]: ').strip() != 'y':
+            log(_writer, _log_file, 'session_abort', 'user_cancelled_at_launch')
+            _device.write(':OUTPut1:STATe 0')
+            _device.write(':OUTPut2:STATe 0')
+            _device.close()
+            return
+
+        # --- Keyboard listener (ESC = emergency stop) ---
+        _start_keyboard_listener()
+        print('\033[32m  [ESC / Ctrl+C] emergency stop active.\033[0m\n')
+
+        # --- Run protocol ---
+        if mode == 'sine':
+            elapsed = _run_sine_protocol(
+                _device, conditions, ramp_duration, stim_duration,
+                rest_duration, repetitions, mock_mode, _writer, _log_file)
+        else:
+            elapsed = _run_phase_protocol(
+                _device, conditions, ramp_duration, rest_duration,
+                repetitions, mock_mode, _writer, _log_file)
+
+        # --- Done ---
+        log(_writer, _log_file, 'session_end', f'total_time={elapsed:.1f}s')
+        print(f'\n\033[32m  Stimulation complete.  Total time: {elapsed:.1f} s\033[0m')
+
+        for _ in range(3):
+            _device.write('SYSTem:BEEPer:IMMediate')
+            if not mock_mode:
+                time.sleep(0.15)
+
+        _device.write(':OUTPut1:STATe 0')
+        _device.write(':OUTPut2:STATe 0')
         _device.write('*WAI')
-        if not mock_mode:
-            time.sleep(0.5)
-
-    elif mode == 'phase':
-        # initial setup with first condition's params (reconfigured per-condition)
-        c = conditions[0]
-        n_cyc = max(1, round(c[3] * c[0]))
-        _setup_phase(_device, c[0], n_cyc)
-
-        for ch in (1, 2):
-            _device.write(f':SOURce{ch}:VOLTage:LIMit:HIGH  {voltage_limit:G}')
-            _device.write(f':SOURce{ch}:VOLTage:LIMit:LOW  -{voltage_limit:G}')
-            _device.write(f':SOURce{ch}:VOLTage:LIMit:STATe 1')
-
-        if not mock_mode:
-            time.sleep(0.5)
-
-    # --- User confirmation ---
-    if input(f'  About to run {len(conditions)} condition(s). Continue? [y/n]: ').strip() != 'y':
-        _device.write(':OUTPut1:STATe 0')
-        _device.write(':OUTPut2:STATe 0')
         _device.close()
-        sys.exit(0)
-
-    if input('  Launch STIMULATION [y/n]: ').strip() != 'y':
-        _device.write(':OUTPut1:STATe 0')
-        _device.write(':OUTPut2:STATe 0')
-        _device.close()
-        sys.exit(0)
-
-    # --- Run protocol ---
-    if mode == 'sine':
-        elapsed = _run_sine_protocol(
-            _device, conditions, ramp_duration, stim_duration,
-            rest_duration, repetitions, mock_mode, _writer)
-    else:
-        elapsed = _run_phase_protocol(
-            _device, conditions, ramp_duration, rest_duration,
-            repetitions, mock_mode, _writer)
-
-    # --- Done ---
-    log(_writer, 'session_end', f'total_time={elapsed:.1f}s')
-    print(f'\n\033[32m  Stimulation complete.  Total time: {elapsed:.1f} s\033[0m')
-
-    for _ in range(3):
-        _device.write('SYSTem:BEEPer:IMMediate')
         if not mock_mode:
-            time.sleep(0.15)
+            rm.close()
 
-    _device.write(':OUTPut1:STATe 0')
-    _device.write(':OUTPut2:STATe 0')
-    _device.write('*WAI')
-    _device.close()
-    if not mock_mode:
-        rm.close()
+    except Exception as exc:
+        log(_writer, _log_file, 'session_error', str(exc))
+        raise
+    finally:
+        _restore_terminal()
+        close_log(_log_file)

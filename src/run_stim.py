@@ -28,7 +28,7 @@ MOCK_MODE = True
 #   "sine"  → amplitude modulation via beat frequency (two sines, delta-f)
 #   "phase" → phase-modulation pulse delivery (finite burst pulses)
 
-MODE = "phase"
+MODE = "sine"
 
 # ── Condition library: Sine Stim ────────────────────────────────────────
 #

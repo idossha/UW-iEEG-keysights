@@ -8,3 +8,4 @@ testerss.py
 *.xlsx
 cfg/participant_conditions_path.txt
 .DS_Store
+.pytest_cache
