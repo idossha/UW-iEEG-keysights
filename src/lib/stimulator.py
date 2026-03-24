@@ -176,7 +176,7 @@ def _ramp(dev, current_v, target_v, duration):
 # ── Protocol: Sine Stim ───────────────────────────────────────────────────
 
 def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
-                       rest_duration, repetitions, mock_mode, writer, log_file):
+                       condition_rest, mock_mode, writer, log_file):
     """Beat-frequency amplitude modulation protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
@@ -186,8 +186,9 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
         target  = [float(a1), float(a2)]
         beat_hz = abs(f2 - f1)
 
+        ts = datetime.datetime.now().strftime('%H:%M:%S')
         print(f'\n\033[96m  Condition {cond_idx + 1}/{len(conditions)}: '
-              f'{f1} Hz + {f2} Hz  →  {beat_hz} Hz envelope  |  {a1}/{a2} mA\033[0m')
+              f'{f1} Hz + {f2} Hz  →  {beat_hz} Hz envelope  |  {a1}/{a2} mA  @  {ts}\033[0m')
 
         log(writer, log_file, 'condition_start',
             f'cond={cond_idx+1} f1={f1} f2={f2} a1={a1} a2={a2} beat={beat_hz}Hz')
@@ -196,44 +197,38 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
         dev.write(f'SOUR2:FREQ {f2}')
         dev.write('*WAI')
 
-        for rep in range(repetitions):
-            ts = datetime.datetime.now().strftime('%H:%M:%S')
-            print(f'  Rep {rep + 1}/{repetitions}  @  {ts}')
-            log(writer, log_file, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
+        dev.write('SYSTem:BEEPer:IMMediate')
+        dev.write('*TRG')
 
-            dev.write('SYSTem:BEEPer:IMMediate')
-            dev.write('*TRG')
+        voltages = _ramp(dev, voltages, target, ramp_duration)
+        print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
 
-            voltages = _ramp(dev, voltages, target, ramp_duration)
-            print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
+        _interruptible_sleep(stim_duration, mock_mode)
 
-            _interruptible_sleep(stim_duration, mock_mode)
+        if not mock_mode:
+            v1 = float(dev.query('SOUR1:VOLT?'))
+            v2 = float(dev.query('SOUR2:VOLT?'))
+            if not np.allclose([v1, v2], voltages, atol=0.01):
+                print(f'  \033[33m[Warn] Voltage mismatch — '
+                      f'expected {voltages}, got [{v1:.3f}, {v2:.3f}]\033[0m')
+            voltages = [v1, v2]
 
-            if not mock_mode:
-                v1 = float(dev.query('SOUR1:VOLT?'))
-                v2 = float(dev.query('SOUR2:VOLT?'))
-                if not np.allclose([v1, v2], voltages, atol=0.01):
-                    print(f'  \033[33m[Warn] Voltage mismatch — '
-                          f'expected {voltages}, got [{v1:.3f}, {v2:.3f}]\033[0m')
-                voltages = [v1, v2]
+        voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
 
-            voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
+        log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1}')
+        print(f'\r  ↓ Ramp down complete              ')
 
-            log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
-            print(f'\r  ↓ Ramp down complete              ')
-
-            is_last = (cond_idx == len(conditions) - 1) and (rep == repetitions - 1)
-            if not is_last:
-                print(f'  ⏸  Rest {rest_duration} s …')
-                _interruptible_sleep(rest_duration, mock_mode)
+        if cond_idx < len(conditions) - 1:
+            print(f'  ⏸  Rest {condition_rest} s …')
+            _interruptible_sleep(condition_rest, mock_mode)
 
     return time.time() - t_start
 
 
 # ── Protocol: Phase Stim ──────────────────────────────────────────────────
 
-def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
-                        repetitions, mock_mode, writer, log_file):
+def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
+                        mock_mode, writer, log_file):
     """Phase-modulation pulse delivery protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
@@ -249,10 +244,11 @@ def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
             print(f'  \033[33m[Warn] Pulse width quantized: '
                   f'{pulse_width}s → {actual_pw:.6f}s ({n_cycles} cycles)\033[0m')
 
+        ts = datetime.datetime.now().strftime('%H:%M:%S')
         print(f'\n\033[96m  Condition {cond_idx + 1}/{len(conditions)}: '
               f'{carrier_freq} Hz carrier  |  {a1}/{a2} mA  |  '
               f'{num_pulses} pulses @ {pulse_freq} Hz  |  '
-              f'pw={actual_pw*1000:.2f} ms  |  train={train_dur:.1f} s\033[0m')
+              f'pw={actual_pw*1000:.2f} ms  |  train={train_dur:.1f} s  @  {ts}\033[0m')
 
         log(writer, log_file, 'condition_start',
             f'cond={cond_idx+1} carrier={carrier_freq} a1={a1} a2={a2} '
@@ -268,38 +264,32 @@ def _run_phase_protocol(dev, conditions, ramp_duration, rest_duration,
         dev.write(':OUTPut1:TRIGger:STATe 1')
         dev.write('*WAI')
 
-        for rep in range(repetitions):
-            ts = datetime.datetime.now().strftime('%H:%M:%S')
-            print(f'  Rep {rep + 1}/{repetitions}  @  {ts}')
-            log(writer, log_file, 'rep_start', f'cond={cond_idx+1} rep={rep+1}')
+        # ramp up
+        dev.write('SYSTem:BEEPer:IMMediate')
+        voltages = _ramp(dev, voltages, target, ramp_duration)
+        print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
 
-            # ramp up
-            dev.write('SYSTem:BEEPer:IMMediate')
-            voltages = _ramp(dev, voltages, target, ramp_duration)
-            print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
+        # deliver pulse train
+        pulse_interval = 1.0 / pulse_freq
+        for p in range(num_pulses):
+            dev.write('*TRG')
+            if (p + 1) % max(1, num_pulses // 10) == 0 or p == num_pulses - 1:
+                sys.stdout.write(f'\r  ⚡ Pulse {p + 1}/{num_pulses}  ')
+                sys.stdout.flush()
+            log(writer, log_file, 'pulse', f'cond={cond_idx+1} pulse={p+1}')
+            _interruptible_sleep(pulse_interval, mock_mode)
+        print()
 
-            # deliver pulse train
-            pulse_interval = 1.0 / pulse_freq
-            for p in range(num_pulses):
-                dev.write('*TRG')
-                if (p + 1) % max(1, num_pulses // 10) == 0 or p == num_pulses - 1:
-                    sys.stdout.write(f'\r  ⚡ Pulse {p + 1}/{num_pulses}  ')
-                    sys.stdout.flush()
-                log(writer, log_file, 'pulse', f'cond={cond_idx+1} rep={rep+1} pulse={p+1}')
-                _interruptible_sleep(pulse_interval, mock_mode)
-            print()
+        log(writer, log_file, 'pulse_train_done', f'cond={cond_idx+1}')
 
-            log(writer, log_file, 'pulse_train_done', f'cond={cond_idx+1} rep={rep+1}')
+        # ramp down
+        voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
+        log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1}')
+        print(f'\r  ↓ Ramp down complete              ')
 
-            # ramp down
-            voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
-            log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1} rep={rep+1}')
-            print(f'\r  ↓ Ramp down complete              ')
-
-            is_last = (cond_idx == len(conditions) - 1) and (rep == repetitions - 1)
-            if not is_last:
-                print(f'  ⏸  Rest {rest_duration} s …')
-                _interruptible_sleep(rest_duration, mock_mode)
+        if cond_idx < len(conditions) - 1:
+            print(f'  ⏸  Rest {condition_rest} s …')
+            _interruptible_sleep(condition_rest, mock_mode)
 
     return time.time() - t_start
 
@@ -312,8 +302,7 @@ def run(
     mode            = 'sine',
     ramp_duration   = 5,
     stim_duration   = 10,
-    rest_duration   = 10,
-    repetitions     = 3,
+    condition_rest  = 10,
     voltage_limit   = 2.0,
     safety_limit_ma = 8.0,
     use_pyvisa_py   = True,
@@ -328,9 +317,8 @@ def run(
     conditions       : list of condition parameters (format depends on mode)
     mode             : 'sine' (beat-frequency AM) or 'phase' (pulse delivery)
     ramp_duration    : seconds for linear amplitude ramp up/down
-    stim_duration    : seconds at target amplitude per rep (sine mode only)
-    rest_duration    : seconds of rest between reps
-    repetitions      : ramp/hold/ramp cycles per condition
+    stim_duration    : seconds at target amplitude per condition (sine mode only)
+    condition_rest   : seconds of rest between conditions
     voltage_limit    : hardware voltage clamp (Volts, ±)
     safety_limit_ma  : abort if any amplitude exceeds this (mA)
     use_pyvisa_py    : True = pyvisa-py backend (macOS/Linux), False = NI-VISA
@@ -368,8 +356,8 @@ def run(
 
     try:
         log(_writer, _log_file, 'session_start',
-            f'mode={mode} conditions={len(conditions)} reps={repetitions} '
-            f'ramp={ramp_duration}s rest={rest_duration}s')
+            f'mode={mode} conditions={len(conditions)} '
+            f'ramp={ramp_duration}s cond_rest={condition_rest}s')
 
         # --- Summary ---
         print(f'\n\033[96m{"─" * 60}')
@@ -377,13 +365,12 @@ def run(
         print(f'{"─" * 60}\033[0m')
         print(f'  Mode        : {"Sine (beat frequency)" if mode == "sine" else "Phase (pulse delivery)"}')
         print(f'  Conditions  : {len(conditions)}')
-        print(f'  Repetitions : {repetitions} per condition')
 
         if mode == 'sine':
-            print(f'  Ramp        : {ramp_duration} s  |  Stim: {stim_duration} s  |  Rest: {rest_duration} s')
+            print(f'  Ramp        : {ramp_duration} s  |  Stim: {stim_duration} s  |  Rest: {condition_rest} s')
             print(f'  Amplitudes  : {all_amps} mA')
         else:
-            print(f'  Ramp        : {ramp_duration} s  |  Rest: {rest_duration} s')
+            print(f'  Ramp        : {ramp_duration} s  |  Rest: {condition_rest} s')
             for i, con in enumerate(conditions):
                 carrier, a1, a2, pw, n_p, p_freq = con
                 print(f'  Cond {i+1}      : {carrier} Hz  {a1}/{a2} mA  '
@@ -462,11 +449,11 @@ def run(
         if mode == 'sine':
             elapsed = _run_sine_protocol(
                 _device, conditions, ramp_duration, stim_duration,
-                rest_duration, repetitions, mock_mode, _writer, _log_file)
+                condition_rest, mock_mode, _writer, _log_file)
         else:
             elapsed = _run_phase_protocol(
-                _device, conditions, ramp_duration, rest_duration,
-                repetitions, mock_mode, _writer, _log_file)
+                _device, conditions, ramp_duration, condition_rest,
+                mock_mode, _writer, _log_file)
 
         # --- Done ---
         log(_writer, _log_file, 'session_end', f'total_time={elapsed:.1f}s')

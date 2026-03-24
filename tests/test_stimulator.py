@@ -61,8 +61,7 @@ def _run_mock(tmp_path, mode='sine', conditions=None, user_inputs=('y', 'y'),
                 mock_mode=True,
                 ramp_duration=0.01,
                 stim_duration=0,
-                rest_duration=0,
-                repetitions=1,
+                condition_rest=0,
                 **kwargs,
             )
         except SystemExit:
@@ -97,7 +96,6 @@ class TestSuccessfulSession:
         rows = list(csv.DictReader(open(path)))
         events = [r['event'] for r in rows]
         assert 'condition_start' in events
-        assert 'rep_start' in events
         assert 'ramp_down_done' in events
 
     def test_phase_logs_pulses(self, tmp_path):
@@ -169,8 +167,7 @@ class TestExceptionHandling:
                     mock_mode=True,
                     ramp_duration=0.01,
                     stim_duration=0,
-                    rest_duration=0,
-                    repetitions=1,
+                    condition_rest=0,
                 )
             except RuntimeError:
                 pass

@@ -65,8 +65,8 @@ Stimualtion Protocols:
     │ —   │ G: Baseline        │ —       │ —       │ 0        │ 0        │ —         │ 30s post-stim (recording only) │
     └─────┴────────────────────┴─────────┴─────────┴──────────┴──────────┴───────────┴────────────────────────────────┘
 
-    Timing: 10s ramp + 20s stim + 10s ramp + 15s rest = 55s/condition
-    24 conditions × 55s ≈ 24 mins
+    Timing: 10s ramp + 20s stim + 10s ramp + 15s rest = 55s/condition (last has no rest)
+    24 × 40s + 23 × 15s = 960s + 345s = 1305s ≈ 22 mins
 
 
 '''
@@ -113,10 +113,9 @@ Stimualtion Protocols:
   ]
 
 
-  RAMP_DURATION = 10  # seconds for amplitude ramp-up and ramp-down
-  STIM_DURATION = 20  # seconds at target amplitude per rep (sine mode only)
-  REST_DURATION = 15  # seconds of rest between reps
-  REPETITIONS = 1     # ramp-up / hold / ramp-down cycles per condition
+  RAMP_DURATION = 10      # seconds for amplitude ramp-up and ramp-down
+  STIM_DURATION = 20      # seconds at target amplitude per condition (sine mode only)
+  CONDITION_REST = 15     # seconds of rest between conditions
 
   # ── Safety ────────────────────────────────────────────────────────────────
 
@@ -135,8 +134,7 @@ Stimualtion Protocols:
           conditions=[condition_map[i] for i in CONDITIONS],
           ramp_duration=RAMP_DURATION,
           stim_duration=STIM_DURATION,
-          rest_duration=REST_DURATION,
-          repetitions=REPETITIONS,
+          condition_rest=CONDITION_REST,
           voltage_limit=VOLTAGE_LIMIT,
           safety_limit_ma=SAFETY_LIMIT_MA,
       )
