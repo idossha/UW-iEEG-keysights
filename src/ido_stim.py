@@ -15,7 +15,19 @@
   MOCK_MODE = False
 
 
-  """
+
+'''
+Ido Haber
+March 24, 2026
+
+
+Neuralynx:
+    - Sample frequency: 32 kHz
+    - No Low Pass Filter!
+    - High-pass filter: default
+
+
+Stimualtion Protocols:
     ┌─────┬────────────────────┬─────────┬─────────┬──────────┬──────────┬───────────┬────────────────────────────────┐
     │ Run │       Block        │ f1 (Hz) │ f2 (Hz) │ Ch1 (mA) │ Ch2 (mA) │ Beat (Hz) │            Purpose             │
     ├─────┼────────────────────┼─────────┼─────────┼──────────┼──────────┼───────────┼────────────────────────────────┤
@@ -55,7 +67,9 @@
 
     Timing: 10s ramp + 20s stim + 10s ramp + 15s rest = 55s/condition
     24 conditions × 55s ≈ 24 mins
-  """
+
+
+'''
 
 
   MODE = "sine"
