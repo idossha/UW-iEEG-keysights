@@ -18,7 +18,7 @@ import datetime
 import numpy as np
 import pyvisa as visa
 
-from lib.logger import open_log, log, close_log
+from lib.logger import SessionLogger
 
 # ── Mock device (for testing without hardware) ─────────────────────────────
 
@@ -34,9 +34,8 @@ class _MockDevice:
 
 # ── Internal state ─────────────────────────────────────────────────────────
 
-_device    = None   # set on connect; read by the emergency-stop callback
-_log_file  = None   # set when log is opened; closed on emergency stop
-_writer    = None   # csv writer for the active log
+_device = None   # set on connect; read by the emergency-stop callback
+_logger = None   # SessionLogger instance for the active session
 
 
 # ── Emergency stop ─────────────────────────────────────────────────────────
@@ -44,13 +43,15 @@ _writer    = None   # csv writer for the active log
 def _emergency_stop():
     _restore_terminal()
     print("\n\033[1;31mEMERGENCY STOP — ESC pressed\033[0m")
-    # Log the abort event before tearing down
-    if _writer is not None and _log_file is not None:
+    if _logger is not None:
         try:
-            log(_writer, _log_file, 'session_abort', 'emergency_stop')
+            _logger.log('session_abort', detail='emergency_stop')
         except Exception:
             pass
-    close_log(_log_file)
+        try:
+            _logger.close()
+        except Exception:
+            pass
     if _device is not None:
         try:
             _device.write(':OUTPut1:STATe 0')
@@ -110,15 +111,21 @@ def _restore_terminal():
         _orig_term_attrs = None
 
 
+# ── Mock timing ───────────────────────────────────────────────────────────
+# In mock mode, durations are compressed by this factor so the session
+# runs quickly but still produces realistic-looking timelines and logs.
+_MOCK_TIME_SCALE = 0.01   # 1 s real → 10 ms mock
+
+
 # ── Interruptible sleep ────────────────────────────────────────────────────
 
 def _interruptible_sleep(duration, mock_mode):
     """
     Sleep for `duration` seconds in real mode.
-    In mock mode, yield briefly so the keyboard-listener thread can fire.
+    In mock mode, sleep a compressed fraction to keep realistic timing.
     """
     if mock_mode:
-        time.sleep(0)          # context-switch to listener thread
+        time.sleep(duration * _MOCK_TIME_SCALE)
     else:
         time.sleep(duration)
 
@@ -152,7 +159,7 @@ def _setup_phase(dev, carrier_freq, n_cycles):
     dev.write(':SOURce2:BURSt:PHASe 180')
 
 
-def _ramp(dev, current_v, target_v, duration):
+def _ramp(dev, current_v, target_v, duration, mock_mode=False):
     """
     Linearly ramp both channel voltages from current_v → target_v over `duration` s.
     Modifies current_v in-place (100 ms steps) and returns it.
@@ -161,6 +168,7 @@ def _ramp(dev, current_v, target_v, duration):
     delta   = [(target_v[i] - current_v[i]) / n_steps for i in range(2)]
     arrow   = '↑' if delta[0] >= 0 else '↓'
     spinner = ['◜', '◝', '◞', '◟']
+    step_sleep = 0.1 * _MOCK_TIME_SCALE if mock_mode else 0.1
 
     for i in range(n_steps):
         sys.stdout.write(f'\r  {arrow} Ramping … {spinner[i % 4]}  ')
@@ -168,7 +176,7 @@ def _ramp(dev, current_v, target_v, duration):
         for ch_idx in range(2):
             current_v[ch_idx] = max(0.0, round(current_v[ch_idx] + delta[ch_idx], 4))
             dev.write(f':SOURce{ch_idx + 1}:VOLTage {current_v[ch_idx]:G}')
-        time.sleep(0.1)
+        time.sleep(step_sleep)
 
     return current_v
 
@@ -176,33 +184,45 @@ def _ramp(dev, current_v, target_v, duration):
 # ── Protocol: Sine Stim ───────────────────────────────────────────────────
 
 def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
-                       condition_rest, mock_mode, writer, log_file):
+                       condition_rest, mock_mode, logger):
     """Beat-frequency amplitude modulation protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
 
+    n_cond = len(conditions)
+
     for cond_idx, con in enumerate(conditions):
+        cond_num = cond_idx + 1
+        proto    = f'{cond_num}/{n_cond}'
         f1, f2, a1, a2 = con
-        target  = [float(a1), float(a2)]
-        beat_hz = abs(f2 - f1)
+        target   = [float(a1), float(a2)]
+        beat_hz  = abs(f2 - f1)
+        cond_str = f'f1={f1} f2={f2} a1={a1} a2={a2} beat={beat_hz}Hz'
 
         ts = datetime.datetime.now().strftime('%H:%M:%S')
-        print(f'\n\033[96m  Condition {cond_idx + 1}/{len(conditions)}: '
+        print(f'\n\033[96m  Condition {proto}: '
               f'{f1} Hz + {f2} Hz  →  {beat_hz} Hz envelope  |  {a1}/{a2} mA  @  {ts}\033[0m')
 
-        log(writer, log_file, 'condition_start',
-            f'cond={cond_idx+1} f1={f1} f2={f2} a1={a1} a2={a2} beat={beat_hz}Hz')
+        logger.log('condition_start', proto, cond_str,
+                   ch1_mA=0.0, ch2_mA=0.0)
 
         dev.write(f'SOUR1:FREQ {f1}')
         dev.write(f'SOUR2:FREQ {f2}')
         dev.write('*WAI')
 
+        # ramp up
         dev.write('SYSTem:BEEPer:IMMediate')
         dev.write('*TRG')
-
-        voltages = _ramp(dev, voltages, target, ramp_duration)
+        logger.log('ramp_up_start', proto, cond_str,
+                   ch1_mA=0.0, ch2_mA=0.0, duration=ramp_duration)
+        voltages = _ramp(dev, voltages, target, ramp_duration, mock_mode)
+        logger.log('ramp_up_done', proto, cond_str,
+                   ch1_mA=voltages[0], ch2_mA=voltages[1])
         print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
 
+        # stimulation hold
+        logger.log('stim_start', proto, cond_str,
+                   ch1_mA=float(a1), ch2_mA=float(a2), duration=stim_duration)
         _interruptible_sleep(stim_duration, mock_mode)
 
         if not mock_mode:
@@ -213,14 +233,28 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
                       f'expected {voltages}, got [{v1:.3f}, {v2:.3f}]\033[0m')
             voltages = [v1, v2]
 
-        voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
+        logger.log('stim_done', proto, cond_str,
+                   ch1_mA=float(a1), ch2_mA=float(a2))
 
-        log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1}')
+        # ramp down
+        logger.log('ramp_down_start', proto, cond_str,
+                   ch1_mA=float(a1), ch2_mA=float(a2), duration=ramp_duration)
+        voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration, mock_mode)
+        logger.log('ramp_down_done', proto, cond_str,
+                   ch1_mA=voltages[0], ch2_mA=voltages[1])
         print(f'\r  ↓ Ramp down complete              ')
 
-        if cond_idx < len(conditions) - 1:
+        logger.log('condition_done', proto, cond_str,
+                   ch1_mA=0.0, ch2_mA=0.0)
+
+        # rest between conditions
+        if cond_idx < n_cond - 1:
             print(f'  ⏸  Rest {condition_rest} s …')
+            logger.log('rest_start', proto, cond_str,
+                       ch1_mA=0.0, ch2_mA=0.0, duration=condition_rest)
             _interruptible_sleep(condition_rest, mock_mode)
+            logger.log('rest_done', proto, cond_str,
+                       ch1_mA=0.0, ch2_mA=0.0)
 
     return time.time() - t_start
 
@@ -228,31 +262,36 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
 # ── Protocol: Phase Stim ──────────────────────────────────────────────────
 
 def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
-                        mock_mode, writer, log_file):
+                        mock_mode, logger):
     """Phase-modulation pulse delivery protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
 
+    n_cond = len(conditions)
+
     for cond_idx, con in enumerate(conditions):
+        cond_num = cond_idx + 1
+        proto    = f'{cond_num}/{n_cond}'
         carrier_freq, a1, a2, pulse_width, num_pulses, pulse_freq = con
         n_cycles  = max(1, round(pulse_width * carrier_freq))
         actual_pw = n_cycles / carrier_freq
         target    = [float(a1), float(a2)]
         train_dur = num_pulses / pulse_freq
+        cond_str  = (f'carrier={carrier_freq}Hz a1={a1} a2={a2} '
+                     f'pw={actual_pw*1000:.2f}ms {num_pulses}p@{pulse_freq}Hz')
 
         if abs(actual_pw - pulse_width) / pulse_width > 0.05:
             print(f'  \033[33m[Warn] Pulse width quantized: '
                   f'{pulse_width}s → {actual_pw:.6f}s ({n_cycles} cycles)\033[0m')
 
         ts = datetime.datetime.now().strftime('%H:%M:%S')
-        print(f'\n\033[96m  Condition {cond_idx + 1}/{len(conditions)}: '
+        print(f'\n\033[96m  Condition {proto}: '
               f'{carrier_freq} Hz carrier  |  {a1}/{a2} mA  |  '
               f'{num_pulses} pulses @ {pulse_freq} Hz  |  '
               f'pw={actual_pw*1000:.2f} ms  |  train={train_dur:.1f} s  @  {ts}\033[0m')
 
-        log(writer, log_file, 'condition_start',
-            f'cond={cond_idx+1} carrier={carrier_freq} a1={a1} a2={a2} '
-            f'pw={actual_pw} n_pulses={num_pulses} pulse_freq={pulse_freq}')
+        logger.log('condition_start', proto, cond_str,
+                   ch1_mA=0.0, ch2_mA=0.0)
 
         # configure device for this condition's carrier/burst
         _setup_phase(dev, carrier_freq, n_cycles)
@@ -266,30 +305,49 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
 
         # ramp up
         dev.write('SYSTem:BEEPer:IMMediate')
-        voltages = _ramp(dev, voltages, target, ramp_duration)
+        logger.log('ramp_up_start', proto, cond_str,
+                   ch1_mA=0.0, ch2_mA=0.0, duration=ramp_duration)
+        voltages = _ramp(dev, voltages, target, ramp_duration, mock_mode)
+        logger.log('ramp_up_done', proto, cond_str,
+                   ch1_mA=voltages[0], ch2_mA=voltages[1])
         print(f'\r  ↑ Ramp up complete — {a1}/{a2} mA              ')
 
         # deliver pulse train
+        logger.log('pulse_train_start', proto, cond_str,
+                   ch1_mA=float(a1), ch2_mA=float(a2),
+                   detail=f'n_pulses={num_pulses} pulse_freq={pulse_freq}Hz')
         pulse_interval = 1.0 / pulse_freq
         for p in range(num_pulses):
             dev.write('*TRG')
             if (p + 1) % max(1, num_pulses // 10) == 0 or p == num_pulses - 1:
                 sys.stdout.write(f'\r  ⚡ Pulse {p + 1}/{num_pulses}  ')
                 sys.stdout.flush()
-            log(writer, log_file, 'pulse', f'cond={cond_idx+1} pulse={p+1}')
+            logger.log('pulse', proto, cond_str,
+                       detail=f'pulse={p+1}/{num_pulses}')
             _interruptible_sleep(pulse_interval, mock_mode)
         print()
-
-        log(writer, log_file, 'pulse_train_done', f'cond={cond_idx+1}')
+        logger.log('pulse_train_done', proto, cond_str,
+                   ch1_mA=float(a1), ch2_mA=float(a2))
 
         # ramp down
-        voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration)
-        log(writer, log_file, 'ramp_down_done', f'cond={cond_idx+1}')
+        logger.log('ramp_down_start', proto, cond_str,
+                   ch1_mA=float(a1), ch2_mA=float(a2), duration=ramp_duration)
+        voltages = _ramp(dev, voltages, [0.0, 0.0], ramp_duration, mock_mode)
+        logger.log('ramp_down_done', proto, cond_str,
+                   ch1_mA=voltages[0], ch2_mA=voltages[1])
         print(f'\r  ↓ Ramp down complete              ')
 
-        if cond_idx < len(conditions) - 1:
+        logger.log('condition_done', proto, cond_str,
+                   ch1_mA=0.0, ch2_mA=0.0)
+
+        # rest between conditions
+        if cond_idx < n_cond - 1:
             print(f'  ⏸  Rest {condition_rest} s …')
+            logger.log('rest_start', proto, cond_str,
+                       ch1_mA=0.0, ch2_mA=0.0, duration=condition_rest)
             _interruptible_sleep(condition_rest, mock_mode)
+            logger.log('rest_done', proto, cond_str,
+                       ch1_mA=0.0, ch2_mA=0.0)
 
     return time.time() - t_start
 
@@ -324,7 +382,7 @@ def run(
     use_pyvisa_py    : True = pyvisa-py backend (macOS/Linux), False = NI-VISA
     mock_mode        : True = run without hardware (for testing)
     """
-    global _device, _log_file, _writer
+    global _device, _logger
 
     if mode not in ('sine', 'phase'):
         print(f'\033[1;31m[ABORT] Unknown mode: {mode!r}. Use "sine" or "phase".\033[0m')
@@ -352,10 +410,11 @@ def run(
                 sys.exit(1)
 
     # --- Logger ---
-    _log_file, _writer = open_log()
+    _logger = SessionLogger()
+    _logger.mode = mode
 
     try:
-        log(_writer, _log_file, 'session_start',
+        _logger.log('session_start', detail=
             f'mode={mode} conditions={len(conditions)} '
             f'ramp={ramp_duration}s cond_rest={condition_rest}s')
 
@@ -436,14 +495,14 @@ def run(
 
         # --- User confirmation ---
         if input(f'  About to run {len(conditions)} condition(s). Continue? [y/n]: ').strip() != 'y':
-            log(_writer, _log_file, 'session_abort', 'user_cancelled_before_start')
+            _logger.log('session_abort', detail='user_cancelled_before_start')
             _device.write(':OUTPut1:STATe 0')
             _device.write(':OUTPut2:STATe 0')
             _device.close()
             return
 
         if input('  Launch STIMULATION [y/n]: ').strip() != 'y':
-            log(_writer, _log_file, 'session_abort', 'user_cancelled_at_launch')
+            _logger.log('session_abort', detail='user_cancelled_at_launch')
             _device.write(':OUTPut1:STATe 0')
             _device.write(':OUTPut2:STATe 0')
             _device.close()
@@ -457,14 +516,14 @@ def run(
         if mode == 'sine':
             elapsed = _run_sine_protocol(
                 _device, conditions, ramp_duration, stim_duration,
-                condition_rest, mock_mode, _writer, _log_file)
+                condition_rest, mock_mode, _logger)
         else:
             elapsed = _run_phase_protocol(
                 _device, conditions, ramp_duration, condition_rest,
-                mock_mode, _writer, _log_file)
+                mock_mode, _logger)
 
         # --- Done ---
-        log(_writer, _log_file, 'session_end', f'total_time={elapsed:.1f}s')
+        _logger.log('session_end', detail=f'total_time={elapsed:.1f}s')
         print(f'\n\033[32m  Stimulation complete.  Total time: {elapsed:.1f} s\033[0m')
 
         for _ in range(3):
@@ -480,8 +539,8 @@ def run(
             rm.close()
 
     except Exception as exc:
-        log(_writer, _log_file, 'session_error', str(exc))
+        _logger.log('session_error', detail=str(exc))
         raise
     finally:
         _restore_terminal()
-        close_log(_log_file)
+        _logger.close()

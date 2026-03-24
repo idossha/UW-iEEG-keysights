@@ -1,106 +1,138 @@
-"""Tests for src/lib/logger.py — open, write, flush, close behaviour."""
-
+"""Tests for src/lib/logger.py — SessionLogger class."""
 import csv
 import os
-import tempfile
-
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from lib.logger import open_log, log, close_log
+from lib.logger import SessionLogger
 
 
-class TestOpenLog:
-    """open_log() should create a file with a header row, flushed to disk."""
+class TestSessionLoggerInit:
+    def test_creates_log_and_csv_files(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        files = {f.suffix for f in tmp_path.iterdir()}
+        assert '.log' in files
+        assert '.csv' in files
+        logger.close()
 
-    def test_creates_file_with_header(self, tmp_path):
-        f, writer = open_log(log_dir=str(tmp_path))
-        # File should exist on disk already (header flushed)
-        files = list(tmp_path.iterdir())
-        assert len(files) == 1
-        assert files[0].suffix == '.csv'
-
-        # Read back — should have exactly the header
-        content = files[0].read_text()
-        assert content.startswith('timestamp,event,detail')
-        close_log(f)
-
-    def test_header_flushed_immediately(self, tmp_path):
-        """Even before close, the header must be on disk."""
-        f, writer = open_log(log_dir=str(tmp_path))
-        path = list(tmp_path.iterdir())[0]
-        size = path.stat().st_size
-        assert size > 0, "Header should be flushed to disk immediately"
-        close_log(f)
+    def test_csv_has_header(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        content = csv_file.read_text()
+        assert content.startswith('timestamp,protocol,condition,phase')
+        logger.close()
 
     def test_creates_log_dir_if_missing(self, tmp_path):
         log_dir = str(tmp_path / 'nested' / 'logs')
-        f, writer = open_log(log_dir=log_dir)
+        logger = SessionLogger(log_dir=log_dir)
         assert os.path.isdir(log_dir)
-        close_log(f)
+        logger.close()
 
 
-class TestLog:
-    """log() should append a row and flush to disk immediately."""
+class TestSessionLoggerLog:
+    def test_writes_to_both_files(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('test_event', protocol='1/3', condition='test_cond', detail='some detail')
 
-    def test_row_persisted_after_log(self, tmp_path):
-        f, writer = open_log(log_dir=str(tmp_path))
-        log(writer, f, 'test_event', 'some detail')
+        # Check .log
+        log_file = [f for f in tmp_path.iterdir() if f.suffix == '.log'][0]
+        log_content = log_file.read_text()
+        assert 'TEST' in log_content.upper() or 'test_event' in log_content
 
-        path = list(tmp_path.iterdir())[0]
-        rows = list(csv.reader(path.open()))
-        assert len(rows) == 2  # header + 1 data row
-        assert rows[1][1] == 'test_event'
-        assert rows[1][2] == 'some detail'
-        close_log(f)
+        # Check .csv
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        rows = list(csv.DictReader(csv_file.open()))
+        assert len(rows) == 1
+        assert rows[0]['protocol'] == '1/3'
+        assert rows[0]['condition'] == 'test_cond'
+        logger.close()
+
+    def test_csv_amplitude_columns(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('ramp_up_done', protocol='1/3', condition='test',
+                   ch1_mA=4.0, ch2_mA=3.5)
+
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        rows = list(csv.DictReader(csv_file.open()))
+        assert rows[0]['ch1_mA'] == '4.00'
+        assert rows[0]['ch2_mA'] == '3.50'
+        logger.close()
+
+    def test_csv_duration_column(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('stim_start', protocol='1/3', condition='test', duration=20.0)
+
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        rows = list(csv.DictReader(csv_file.open()))
+        assert rows[0]['duration_s'] == '20.0'
+        logger.close()
+
+    def test_empty_optional_columns(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('session_start', detail='mode=sine')
+
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        rows = list(csv.DictReader(csv_file.open()))
+        assert rows[0]['protocol'] == ''
+        assert rows[0]['condition'] == ''
+        assert rows[0]['ch1_mA'] == ''
+        assert rows[0]['ch2_mA'] == ''
+        assert rows[0]['duration_s'] == ''
+        logger.close()
 
     def test_multiple_rows(self, tmp_path):
-        f, writer = open_log(log_dir=str(tmp_path))
+        logger = SessionLogger(log_dir=str(tmp_path))
         for i in range(5):
-            log(writer, f, f'event_{i}', f'detail_{i}')
+            logger.log(f'event_{i}', detail=f'detail_{i}')
 
-        path = list(tmp_path.iterdir())[0]
-        rows = list(csv.reader(path.open()))
-        assert len(rows) == 6  # header + 5
-        close_log(f)
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        rows = list(csv.DictReader(csv_file.open()))
+        assert len(rows) == 5
+        logger.close()
 
     def test_flush_survives_no_close(self, tmp_path):
-        """Data should be on disk even if we never call close_log."""
-        f, writer = open_log(log_dir=str(tmp_path))
-        log(writer, f, 'critical_event', 'must survive')
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('critical_event', detail='must survive')
 
-        path = list(tmp_path.iterdir())[0]
-        content = path.read_text()
-        assert 'critical_event' in content
+        csv_file = [f for f in tmp_path.iterdir() if f.suffix == '.csv'][0]
+        assert 'critical_event' in csv_file.read_text()
+
+        log_file = [f for f in tmp_path.iterdir() if f.suffix == '.log'][0]
+        assert 'critical_event' in log_file.read_text().lower() or 'CRITICAL' in log_file.read_text()
         # cleanup
-        f.close()
-
-    def test_default_detail_empty(self, tmp_path):
-        f, writer = open_log(log_dir=str(tmp_path))
-        log(writer, f, 'no_detail')
-
-        path = list(tmp_path.iterdir())[0]
-        rows = list(csv.reader(path.open()))
-        assert rows[1][2] == ''
-        close_log(f)
+        logger.close()
 
 
-class TestCloseLog:
-    """close_log() should flush and close; repeat calls should be safe."""
+class TestSessionLoggerTimeline:
+    def test_records_timeline_when_amplitude_provided(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('ramp_up_done', ch1_mA=4.0, ch2_mA=3.0)
+        assert len(logger.timeline) == 1
+        assert logger.timeline[0][1] == 4.0
+        assert logger.timeline[0][2] == 3.0
+        logger.close()
 
-    def test_close_flushes(self, tmp_path):
-        f, writer = open_log(log_dir=str(tmp_path))
-        log(writer, f, 'before_close')
-        close_log(f)
-        assert f.closed
+    def test_no_timeline_without_amplitude(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('session_start', detail='mode=sine')
+        assert len(logger.timeline) == 0
+        logger.close()
 
-        path = list(tmp_path.iterdir())[0]
-        assert 'before_close' in path.read_text()
+    def test_condition_start_gets_label(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.log('condition_start', protocol='1/3', ch1_mA=0.0, ch2_mA=0.0)
+        assert logger.timeline[0][3] == '1/3'  # label
+        logger.close()
 
-    def test_double_close_safe(self, tmp_path):
-        f, writer = open_log(log_dir=str(tmp_path))
-        close_log(f)
-        close_log(f)  # should not raise
 
-    def test_close_none_safe(self):
-        close_log(None)  # should not raise
+class TestSessionLoggerClose:
+    def test_close_is_idempotent(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        logger.close()
+        logger.close()  # should not raise
+
+    def test_png_path_set(self, tmp_path):
+        logger = SessionLogger(log_dir=str(tmp_path))
+        assert logger.png_path.endswith('.png')
+        logger.close()
