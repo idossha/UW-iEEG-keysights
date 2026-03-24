@@ -369,12 +369,20 @@ def run(
         if mode == 'sine':
             print(f'  Ramp        : {ramp_duration} s  |  Stim: {stim_duration} s  |  Rest: {condition_rest} s')
             print(f'  Amplitudes  : {all_amps} mA')
+            total_s = len(conditions) * (2 * ramp_duration + stim_duration) \
+                    + max(0, len(conditions) - 1) * condition_rest
         else:
             print(f'  Ramp        : {ramp_duration} s  |  Rest: {condition_rest} s')
+            total_s = 0
             for i, con in enumerate(conditions):
                 carrier, a1, a2, pw, n_p, p_freq = con
                 print(f'  Cond {i+1}      : {carrier} Hz  {a1}/{a2} mA  '
                       f'{n_p} pulses @ {p_freq} Hz  pw={pw*1000:.2f} ms')
+                total_s += 2 * ramp_duration + n_p / p_freq
+            total_s += max(0, len(conditions) - 1) * condition_rest
+
+        mins, secs = divmod(int(total_s), 60)
+        print(f'  Est. time   : {total_s:.0f} s  ({mins}m {secs:02d}s)')
 
         # --- Connect ---
         if mock_mode:
