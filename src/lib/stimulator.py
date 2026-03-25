@@ -414,6 +414,14 @@ def run(
     _logger.mode = mode
 
     try:
+        # --- Operator metadata ---
+        electrodes = input('What electrodes are connected? ').strip()
+        stim_area = input('Which area is stimulated? ').strip()
+        _logger.log(
+            'operator_metadata',
+            detail=f'electrodes="{electrodes}" stim_area="{stim_area}"'
+        )
+
         _logger.log('session_start', detail=
             f'mode={mode} conditions={len(conditions)} '
             f'ramp={ramp_duration}s cond_rest={condition_rest}s')
