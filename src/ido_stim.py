@@ -1,22 +1,21 @@
- """
-  run_stim.py — Keysight EDU stimulation controller
-  ==================================================
-  Edit the values below, then run:
+"""
+run_stim.py — Keysight EDU stimulation controller
+==================================================
+Edit the values below, then run:
 
-      uv run python src/run_stim.py
+  uv run python src/run_stim.py
 
-  Press ESC at any time for an emergency stop.
-  """
+Press ESC at any time for an emergency stop.
+"""
 
-  from lib.stimulator import run
+from lib.stimulator import run
 
-  DEVICE_RESOURCE = "USB0::10893::36097::CN61310059::0::INSTR"
-  USE_PYVISA_PY = True
-  MOCK_MODE = False
+DEVICE_RESOURCE = "USB0::10893::36097::CN61310059::0::INSTR"
+USE_PYVISA_PY = True
+MOCK_MODE = True
 
 
-
-'''
+"""
 Ido Haber
 March 24, 2026
 
@@ -69,72 +68,91 @@ Stimualtion Protocols:
     24 × 40s + 23 × 15s = 960s + 345s = 1305s ≈ 22 mins
 
 
-'''
+"""
 
 
-  MODE = "sine"
+MODE = "sine"
 
 
-  SINE_CONDITION_MAP = {
-      # ── Block B/C: QSA Frequency Sweep (Δf=1 Hz, 4 mA) ─────────────
-      1: [4000, 4001, 4, 4],    # 4 kHz carrier
-      2: [5000, 5001, 4, 4],    # 5 kHz carrier
-      3: [6000, 6001, 4, 4],    # 6 kHz carrier
-      4: [7000, 7001, 4, 4],    # 7 kHz carrier
-      5: [8000, 8001, 4, 4],    # 8 kHz carrier
-      # ── Block D: Controls (8 kHz reference) ──────────────────────────
-      6: [8000, 8000, 4, 4],    # Sham: Δf=0, no beat envelope
-      7: [8000, 8000, 4, 0],    # Ch1 only: isolate pair 1 field
-      8: [8000, 8000, 0, 4],    # Ch2 only: isolate pair 2 field
-      # ── Block E: Dose-Response (8 kHz, Δf=1 Hz) ─────────────────────
-      9:  [8000, 8001, 2, 2],    # 2.0 p2p
-      10: [8000, 8001, 2.5, 2.5],# 2.5 p2p
-      11: [8000, 8001, 3, 3],    # 3.0 p2p
-      12: [8000, 8001, 3.5, 3.5],# 3.5 p2p
-      # condition 5 serves as 4 p2psat 8 kHz
-      # ── Block F: Beat Frequency Variation (8 kHz, 4 mA) ─────────────
-      # condition 5 serves as Δf=1 Hz
-      13: [8000, 8010, 4, 4],    # Δf = 10 Hz
-      14: [8000, 8050, 4, 4],    # Δf = 50 Hz
-      15: [8000, 8130, 4, 4],    # Δf = 130 Hz
-  }
+SINE_CONDITION_MAP = {
+    # ── Block B/C: QSA Frequency Sweep (Δf=1 Hz, 4 mA) ─────────────
+    1: [4000, 4001, 4, 4],  # 4 kHz carrier
+    2: [5000, 5001, 4, 4],  # 5 kHz carrier
+    3: [6000, 6001, 4, 4],  # 6 kHz carrier
+    4: [7000, 7001, 4, 4],  # 7 kHz carrier
+    5: [8000, 8001, 4, 4],  # 8 kHz carrier
+    # ── Block D: Controls (8 kHz reference) ──────────────────────────
+    6: [8000, 8000, 4, 4],  # Sham: Δf=0, no beat envelope
+    7: [8000, 8000, 4, 0],  # Ch1 only: isolate pair 1 field
+    8: [8000, 8000, 0, 4],  # Ch2 only: isolate pair 2 field
+    # ── Block E: Dose-Response (8 kHz, Δf=1 Hz) ─────────────────────
+    9: [8000, 8001, 2, 2],  # 2.0 p2p
+    10: [8000, 8001, 2.5, 2.5],  # 2.5 p2p
+    11: [8000, 8001, 3, 3],  # 3.0 p2p
+    12: [8000, 8001, 3.5, 3.5],  # 3.5 p2p
+    # condition 5 serves as 4 p2psat 8 kHz
+    # ── Block F: Beat Frequency Variation (8 kHz, 4 mA) ─────────────
+    # condition 5 serves as Δf=1 Hz
+    13: [8000, 8010, 4, 4],  # Δf = 10 Hz
+    14: [8000, 8050, 4, 4],  # Δf = 50 Hz
+    15: [8000, 8130, 4, 4],  # Δf = 130 Hz
+}
 
-  CONDITIONS = [
-      # Block B: QSA sweep round 1
-      1, 2, 3, 4, 5,
-      # Block C: QSA sweep round 2 (reproducibility)
-      1, 2, 3, 4, 5,
-      # Block D: Controls
-      6, 7, 8, 7, 8,
-      # Block E: Dose-response (2 → 2.5 → 3 → 3.5 → 4 mA ascending)
-      9, 10, 11, 12, 5,
-      # Block F: Beat frequency variation (1 → 10 → 50 → 130 Hz)
-      5, 13, 14, 15,
-  ]
+CONDITIONS = [
+    # Block B: QSA sweep round 1
+    1,
+    2,
+    3,
+    4,
+    5,
+    # Block C: QSA sweep round 2 (reproducibility)
+    1,
+    2,
+    3,
+    4,
+    5,
+    # Block D: Controls
+    6,
+    7,
+    8,
+    7,
+    8,
+    # Block E: Dose-response (2 → 2.5 → 3 → 3.5 → 4 mA ascending)
+    9,
+    10,
+    11,
+    12,
+    5,
+    # Block F: Beat frequency variation (1 → 10 → 50 → 130 Hz)
+    5,
+    13,
+    14,
+    15,
+]
 
 
-  RAMP_DURATION = 10      # seconds for amplitude ramp-up and ramp-down
-  STIM_DURATION = 20      # seconds at target amplitude per condition (sine mode only)
-  CONDITION_REST = 15     # seconds of rest between conditions
+RAMP_DURATION = 10  # seconds for amplitude ramp-up and ramp-down
+STIM_DURATION = 20  # seconds at target amplitude per condition (sine mode only)
+CONDITION_REST = 15  # seconds of rest between conditions
 
-  # ── Safety ────────────────────────────────────────────────────────────────
+# ── Safety ────────────────────────────────────────────────────────────────
 
-  VOLTAGE_LIMIT = 2.0   # hardware voltage clamp on the device (Volts, ±)
-  SAFETY_LIMIT_MA = 8.0  # script aborts if any amplitude exceeds this (mA)
+VOLTAGE_LIMIT = 2.0  # hardware voltage clamp on the device (Volts, ±)
+SAFETY_LIMIT_MA = 8.0  # script aborts if any amplitude exceeds this (mA)
 
-  # ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
 
-  if __name__ == "__main__":
-      condition_map = SINE_CONDITION_MAP if MODE == "sine" else PHASE_CONDITION_MAP
-      run(
-          device_resource=DEVICE_RESOURCE,
-          use_pyvisa_py=USE_PYVISA_PY,
-          mock_mode=MOCK_MODE,
-          mode=MODE,
-          conditions=[condition_map[i] for i in CONDITIONS],
-          ramp_duration=RAMP_DURATION,
-          stim_duration=STIM_DURATION,
-          condition_rest=CONDITION_REST,
-          voltage_limit=VOLTAGE_LIMIT,
-          safety_limit_ma=SAFETY_LIMIT_MA,
-      )
+if __name__ == "__main__":
+    condition_map = SINE_CONDITION_MAP if MODE == "sine" else PHASE_CONDITION_MAP
+    run(
+        device_resource=DEVICE_RESOURCE,
+        use_pyvisa_py=USE_PYVISA_PY,
+        mock_mode=MOCK_MODE,
+        mode=MODE,
+        conditions=[condition_map[i] for i in CONDITIONS],
+        ramp_duration=RAMP_DURATION,
+        stim_duration=STIM_DURATION,
+        condition_rest=CONDITION_REST,
+        voltage_limit=VOLTAGE_LIMIT,
+        safety_limit_ma=SAFETY_LIMIT_MA,
+    )

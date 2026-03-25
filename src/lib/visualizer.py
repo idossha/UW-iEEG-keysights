@@ -6,6 +6,22 @@ Generate a publication-quality timeline PNG after a stimulation session.
 import datetime
 
 
+# Events worth labelling on the x-axis (mapped to short display names)
+_EVENT_LABELS = {
+    'condition_start': 'start',
+    'ramp_up_start':   'ramp ↑',
+    'ramp_up_done':    'ramp ↑ done',
+    'stim_start':      'stim',
+    'stim_done':       'stim done',
+    'ramp_down_start': 'ramp ↓',
+    'ramp_down_done':  'ramp ↓ done',
+    'rest_start':      'rest',
+    'rest_done':       'rest done',
+    'pulse_train_start': 'pulses',
+    'pulse_train_done':  'pulses done',
+}
+
+
 def generate_timeline(timeline, output_path, mode=None, t0=None):
     """
     Generate a publication-quality timeline plot of the stimulation session.
@@ -14,8 +30,6 @@ def generate_timeline(timeline, output_path, mode=None, t0=None):
     ----------
     timeline : list of tuples
         Each tuple: (elapsed_s, ch1_mA, ch2_mA, label, cond_info, event).
-        Labels are non-empty at condition boundaries. cond_info has the
-        condition parameter string at condition_start events.
     output_path : str
         Path to save the PNG file.
     mode : str or None
@@ -56,7 +70,7 @@ def generate_timeline(timeline, output_path, mode=None, t0=None):
 
     channels_identical = all(a == b for a, b in zip(ch1, ch2))
 
-    # --- Identify rest regions (pairs of rest_start → rest_done) ---
+    # --- Identify rest regions ---
     rest_regions = []
     rest_start_t = None
     for wt, ev in zip(wall_times, events):
@@ -66,52 +80,77 @@ def generate_timeline(timeline, output_path, mode=None, t0=None):
             rest_regions.append((rest_start_t, wt))
             rest_start_t = None
 
-    # --- Build condition annotations ---
-    annotations = []
+    # --- Condition info annotations (like REST, placed near the line) ---
+    cond_annotations = []
     for i, (lbl, info) in enumerate(zip(labels, cond_infos)):
         if lbl and info:
-            annotations.append((wall_times[i], lbl, _format_cond_info(info, mode)))
+            cond_annotations.append(
+                (wall_times[i], lbl, _format_cond_info(info, mode)))
 
     # --- Figure size ---
-    fig_width = max(12, len(annotations) * 1.2)
-    fig, ax = plt.subplots(figsize=(fig_width, 4.5), dpi=150)
+    n_conds = len(cond_annotations)
+    fig_width = max(12, n_conds * 1.5)
+    fig, ax = plt.subplots(figsize=(fig_width, 5), dpi=150)
 
-    # --- Shade rest regions ---
-    for r_start, r_end in rest_regions:
-        ax.axvspan(r_start, r_end, alpha=0.08, color="gray")
-        mid = r_start + (r_end - r_start) / 2
-        ax.text(mid, 0, "REST", fontsize=6, ha="center", va="bottom",
-                color="gray", style="italic")
+    # --- Plot lines (dashed so both are visible when overlapping) ---
+    ax.plot(wall_times, ch1, color="steelblue", linewidth=1.4,
+            linestyle="--", label="Ch 1")
+    ax.plot(wall_times, ch2, color="orangered", linewidth=1.4,
+            linestyle=":", label="Ch 2")
 
-    # --- Plot lines ---
-    if channels_identical:
-        ax.plot(wall_times, ch1, color="steelblue", linewidth=1.4, label="Amplitude")
-        ax.fill_between(wall_times, ch1, alpha=0.15, color="steelblue")
-    else:
-        ax.plot(wall_times, ch1, color="steelblue", linewidth=1.4, label="Ch 1")
-        ax.fill_between(wall_times, ch1, alpha=0.15, color="steelblue")
-        ax.plot(wall_times, ch2, color="orangered", linewidth=1.4, label="Ch 2")
+    # --- Condition vertical lines ---
+    for wt_start, lbl, info_text in cond_annotations:
+        ax.axvline(wt_start, color="lightgray", linestyle="--", linewidth=0.8)
 
-    # --- Condition annotations ---
-    y_top = ax.get_ylim()[1]
-    for wt, lbl, info_text in annotations:
-        ax.axvline(wt, color="lightgray", linestyle="--", linewidth=0.8)
-        short = lbl.split("/")[0] if "/" in lbl else lbl
-        ax.text(
-            wt, y_top * 1.02,
-            f"{short}  {info_text}",
-            fontsize=6, ha="left", va="bottom", color="dimgray",
-            rotation=45, rotation_mode="anchor",
-        )
+    # --- Build condition info lookup per timeline point ---
+    cond_info_by_idx = {}
+    for i, (lbl, info) in enumerate(zip(labels, cond_infos)):
+        if lbl and info:
+            short = lbl.split("/")[0] if "/" in lbl else lbl
+            cond_info_by_idx[i] = f"#{short} {_format_cond_info(info, mode)}"
 
-    # --- X-axis: wall-clock ---
-    total_s = elapsed[-1]
-    if total_s < 300:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-    else:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    fig.autofmt_xdate(rotation=0, ha="center")
-    ax.set_xlabel("Time")
+    current_cond_info = ''
+    cond_info_per_point = []
+    for i, ev in enumerate(events):
+        if i in cond_info_by_idx:
+            current_cond_info = cond_info_by_idx[i]
+        cond_info_per_point.append(current_cond_info)
+
+    # --- X-axis: tilted time ticks at each step event ---
+    tick_positions = []
+    for i, (wt, ev) in enumerate(zip(wall_times, events)):
+        if ev in _EVENT_LABELS:
+            tick_positions.append(wt)
+
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels([t.strftime("%H:%M:%S") for t in tick_positions],
+                       fontsize=6.5, rotation=45, ha="right")
+
+    # --- Centered horizontal info labels below axis for stim and rest ---
+    # Find stim (start→done) and rest (start→done) spans, place label centered.
+    spans = []  # (start_wt, end_wt, label_text)
+    for i, ev in enumerate(events):
+        if ev == 'stim_start':
+            # find matching stim_done
+            for j in range(i + 1, len(events)):
+                if events[j] == 'stim_done':
+                    spans.append((wall_times[i], wall_times[j],
+                                  cond_info_per_point[i]))
+                    break
+        elif ev == 'rest_start':
+            for j in range(i + 1, len(events)):
+                if events[j] == 'rest_done':
+                    spans.append((wall_times[i], wall_times[j], 'REST'))
+                    break
+
+    for s, e, txt in spans:
+        mid = s + (e - s) / 2
+        ax.annotate(txt, xy=(mid, 0), xycoords=('data', 'axes fraction'),
+                    xytext=(0, -42), textcoords='offset points',
+                    fontsize=6.5, ha='center', va='top', color='dimgray',
+                    annotation_clip=False)
+
+    ax.set_xlabel("")
     ax.set_ylabel("Amplitude (mA)")
 
     # --- Title ---
@@ -123,7 +162,7 @@ def generate_timeline(timeline, output_path, mode=None, t0=None):
 
     # --- Legend & layout ---
     ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
-    ax.margins(y=0.25)
+    ax.margins(y=0.15)
     fig.tight_layout()
 
     # --- Save ---

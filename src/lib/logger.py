@@ -43,8 +43,7 @@ class SessionLogger:
 
         # CSV header
         self._csv_writer.writerow([
-            'timestamp', 'protocol', 'condition', 'phase',
-            'ch1_mA', 'ch2_mA', 'duration_s', 'detail',
+            'timestamp', '#', 'condition',
         ])
         self._csv_file.flush()
 
@@ -204,20 +203,18 @@ class SessionLogger:
             padded_label = f'{label:<18s}'
             self._log_file.write(f'  [{ts}] {padded_label}{suffix}\n')
 
+    # Events that get their own CSV row (one row per stim)
+    _CSV_EVENTS = {'stim_start', 'pulse_train_start'}
+
     def _write_csv_row(self, ts, event, protocol, condition, detail,
                        ch1_mA, ch2_mA, duration):
-        """Append a structured row to the .csv file."""
-        # Determine the phase column — use the raw event name
-        phase = event
+        """Append a structured row to the .csv file (main stim events only)."""
+        if event not in self._CSV_EVENTS:
+            return
 
-        # Format amplitude columns
-        ch1_str = f'{ch1_mA:.2f}' if ch1_mA is not None else ''
-        ch2_str = f'{ch2_mA:.2f}' if ch2_mA is not None else ''
-
-        # Format duration column
-        dur_str = f'{duration:.1f}' if duration is not None else ''
+        # Extract just the number from "1/24" → "1"
+        proto_num = protocol.split('/')[0] if '/' in protocol else protocol
 
         self._csv_writer.writerow([
-            ts, protocol, condition, phase,
-            ch1_str, ch2_str, dur_str, detail,
+            ts, proto_num, condition,
         ])
