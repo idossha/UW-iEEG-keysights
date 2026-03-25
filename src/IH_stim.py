@@ -12,7 +12,7 @@ from lib.stimulator import run
 
 DEVICE_RESOURCE = "USB0::10893::36097::CN61310059::0::INSTR"
 USE_PYVISA_PY = True
-MOCK_MODE = False
+MOCK_MODE = True
 
 
 """
