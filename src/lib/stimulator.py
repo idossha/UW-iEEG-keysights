@@ -223,6 +223,8 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
         # stimulation hold
         logger.log('stim_start', proto, cond_str,
                    ch1_mA=float(a1), ch2_mA=float(a2), duration=stim_duration)
+        stim_start_ts = datetime.datetime.now().strftime('%H:%M:%S')
+        print(f'  ▶ Stimulation start time: {stim_start_ts}  (holding for {stim_duration:.1f}s)')
         _interruptible_sleep(stim_duration, mock_mode)
 
         if not mock_mode:
@@ -235,6 +237,8 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
 
         logger.log('stim_done', proto, cond_str,
                    ch1_mA=float(a1), ch2_mA=float(a2))
+        stim_end_ts = datetime.datetime.now().strftime('%H:%M:%S')
+        print(f'  ■ Stimulation end time:   {stim_end_ts}')
 
         # ramp down
         logger.log('ramp_down_start', proto, cond_str,
@@ -316,6 +320,9 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
         logger.log('pulse_train_start', proto, cond_str,
                    ch1_mA=float(a1), ch2_mA=float(a2),
                    detail=f'n_pulses={num_pulses} pulse_freq={pulse_freq}Hz')
+        stim_start_ts = datetime.datetime.now().strftime('%H:%M:%S')
+        print(f'  ▶ Stimulation start time: {stim_start_ts}  '
+              f'({num_pulses} pulses @ {pulse_freq} Hz)')
         pulse_interval = 1.0 / pulse_freq
         for p in range(num_pulses):
             dev.write('*TRG')
@@ -328,6 +335,8 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
         print()
         logger.log('pulse_train_done', proto, cond_str,
                    ch1_mA=float(a1), ch2_mA=float(a2))
+        stim_end_ts = datetime.datetime.now().strftime('%H:%M:%S')
+        print(f'  ■ Stimulation end time:   {stim_end_ts}')
 
         # ramp down
         logger.log('ramp_down_start', proto, cond_str,
