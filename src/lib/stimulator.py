@@ -14,6 +14,7 @@ import threading
 import time
 import tty
 import datetime
+import random
 
 import numpy as np
 import pyvisa as visa
@@ -266,7 +267,7 @@ def _run_sine_protocol(dev, conditions, ramp_duration, stim_duration,
 # ── Protocol: Phase Stim ──────────────────────────────────────────────────
 
 def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
-                        mock_mode, logger):
+                        phase_iti_range, mock_mode, logger):
     """Phase-modulation pulse delivery protocol."""
     t_start  = time.time()
     voltages = [0.0, 0.0]
@@ -280,9 +281,13 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
         n_cycles  = max(1, round(pulse_width * carrier_freq))
         actual_pw = n_cycles / carrier_freq
         target    = [float(a1), float(a2)]
-        train_dur = num_pulses / pulse_freq
+        iti_min_cfg, iti_max_cfg = phase_iti_range
+        iti_min = (1.0 / pulse_freq) if iti_min_cfg is None else iti_min_cfg
+        iti_max = (1.0 / pulse_freq) if iti_max_cfg is None else iti_max_cfg
+        train_dur = num_pulses * ((iti_min + iti_max) / 2.0)
         cond_str  = (f'carrier={carrier_freq}Hz a1={a1} a2={a2} '
-                     f'pw={actual_pw*1000:.2f}ms {num_pulses}p@{pulse_freq}Hz')
+                     f'pw={actual_pw*1000:.2f}ms {num_pulses}p '
+                     f'iti={iti_min:.3f}-{iti_max:.3f}s')
 
         if abs(actual_pw - pulse_width) / pulse_width > 0.05:
             print(f'  \033[33m[Warn] Pulse width quantized: '
@@ -291,8 +296,10 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
         ts = datetime.datetime.now().strftime('%H:%M:%S')
         print(f'\n\033[96m  Condition {proto}: '
               f'{carrier_freq} Hz carrier  |  {a1}/{a2} mA  |  '
-              f'{num_pulses} pulses @ {pulse_freq} Hz  |  '
-              f'pw={actual_pw*1000:.2f} ms  |  train={train_dur:.1f} s  @  {ts}\033[0m')
+              f'{num_pulses} pulses  |  '
+              f'pw={actual_pw*1000:.2f} ms  |  '
+              f'ITI={iti_min:.3f}-{iti_max:.3f} s  |  '
+              f'train={train_dur:.1f} s  @  {ts}\033[0m')
 
         logger.log('condition_start', proto, cond_str,
                    ch1_mA=0.0, ch2_mA=0.0)
@@ -319,11 +326,10 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
         # deliver pulse train
         logger.log('pulse_train_start', proto, cond_str,
                    ch1_mA=float(a1), ch2_mA=float(a2),
-                   detail=f'n_pulses={num_pulses} pulse_freq={pulse_freq}Hz')
+                   detail=f'n_pulses={num_pulses} iti={iti_min:.3f}-{iti_max:.3f}s')
         stim_start_ts = datetime.datetime.now().strftime('%H:%M:%S')
         print(f'  ▶ Stimulation start time: {stim_start_ts}  '
-              f'({num_pulses} pulses @ {pulse_freq} Hz)')
-        pulse_interval = 1.0 / pulse_freq
+              f'({num_pulses} pulses, ITI {iti_min:.3f}-{iti_max:.3f} s)')
         for p in range(num_pulses):
             dev.write('*TRG')
             if (p + 1) % max(1, num_pulses // 10) == 0 or p == num_pulses - 1:
@@ -331,7 +337,8 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
                 sys.stdout.flush()
             logger.log('pulse', proto, cond_str,
                        detail=f'pulse={p+1}/{num_pulses}')
-            _interruptible_sleep(pulse_interval, mock_mode)
+            interval = random.uniform(iti_min, iti_max)
+            _interruptible_sleep(max(actual_pw, interval), mock_mode)
         print()
         logger.log('pulse_train_done', proto, cond_str,
                    ch1_mA=float(a1), ch2_mA=float(a2))
@@ -370,6 +377,7 @@ def run(
     ramp_duration   = 5,
     stim_duration   = 10,
     condition_rest  = 10,
+    phase_iti_range = (None, None),
     voltage_limit   = 2.0,
     safety_limit_ma = 8.0,
     use_pyvisa_py   = True,
@@ -386,6 +394,7 @@ def run(
     ramp_duration    : seconds for linear amplitude ramp up/down
     stim_duration    : seconds at target amplitude per condition (sine mode only)
     condition_rest   : seconds of rest between conditions
+    phase_iti_range  : `(min_s, max_s)` random interstimulus interval for phase mode
     voltage_limit    : hardware voltage clamp (Volts, ±)
     safety_limit_ma  : abort if any amplitude exceeds this (mA)
     use_pyvisa_py    : True = pyvisa-py backend (macOS/Linux), False = NI-VISA
@@ -409,13 +418,26 @@ def run(
 
     # phase-specific validation
     if mode == 'phase':
+        if len(phase_iti_range) != 2:
+            print('\033[1;31m[ABORT] phase_iti_range must be a 2-item sequence: (min_s, max_s).\033[0m')
+            sys.exit(1)
+        iti_min_cfg, iti_max_cfg = phase_iti_range
         for i, con in enumerate(conditions):
             carrier_freq, _, _, pulse_width, num_pulses, pulse_freq = con
             n_cycles = max(1, round(pulse_width * carrier_freq))
             actual_pw = n_cycles / carrier_freq
-            if pulse_freq > 1.0 / actual_pw:
-                print(f'\033[1;31m[ABORT] Condition {i+1}: pulse_freq ({pulse_freq} Hz) '
-                      f'exceeds max for pulse_width ({actual_pw:.6f}s).\033[0m')
+            iti_min = (1.0 / pulse_freq) if iti_min_cfg is None else iti_min_cfg
+            iti_max = (1.0 / pulse_freq) if iti_max_cfg is None else iti_max_cfg
+            if iti_min <= 0 or iti_max <= 0:
+                print(f'\033[1;31m[ABORT] Condition {i+1}: phase_iti_range values must be > 0.\033[0m')
+                sys.exit(1)
+            if iti_min > iti_max:
+                print(f'\033[1;31m[ABORT] Condition {i+1}: phase_iti_range min exceeds max.\033[0m')
+                sys.exit(1)
+            if iti_min < actual_pw:
+                print(f'\033[1;31m[ABORT] Condition {i+1}: minimum phase_iti_range '
+                      f'({iti_min:.3f}s) is shorter than pulse width '
+                      f'({actual_pw:.6f}s).\033[0m')
                 sys.exit(1)
 
     # --- Logger ---
@@ -433,7 +455,8 @@ def run(
 
         _logger.log('session_start', detail=
             f'mode={mode} conditions={len(conditions)} '
-            f'ramp={ramp_duration}s cond_rest={condition_rest}s')
+            f'ramp={ramp_duration}s cond_rest={condition_rest}s '
+            f'phase_iti_range={phase_iti_range[0]}-{phase_iti_range[1]}s')
 
         # --- Summary ---
         print(f'\n\033[96m{"─" * 60}')
@@ -448,13 +471,17 @@ def run(
             total_s = len(conditions) * (2 * ramp_duration + stim_duration) \
                     + max(0, len(conditions) - 1) * condition_rest
         else:
-            print(f'  Ramp        : {ramp_duration} s  |  Rest: {condition_rest} s')
+            iti_summary_min = phase_iti_range[0] if phase_iti_range[0] is not None else (1.0 / conditions[0][5])
+            iti_summary_max = phase_iti_range[1] if phase_iti_range[1] is not None else (1.0 / conditions[0][5])
+            print(f'  Ramp        : {ramp_duration} s  |  Rest: {condition_rest} s  |  ITI: {iti_summary_min}-{iti_summary_max} s')
             total_s = 0
             for i, con in enumerate(conditions):
                 carrier, a1, a2, pw, n_p, p_freq = con
+                iti_min = phase_iti_range[0] if phase_iti_range[0] is not None else (1.0 / p_freq)
+                iti_max = phase_iti_range[1] if phase_iti_range[1] is not None else (1.0 / p_freq)
                 print(f'  Cond {i+1}      : {carrier} Hz  {a1}/{a2} mA  '
-                      f'{n_p} pulses @ {p_freq} Hz  pw={pw*1000:.2f} ms')
-                total_s += 2 * ramp_duration + n_p / p_freq
+                      f'{n_p} pulses  pw={pw*1000:.2f} ms  iti={iti_min:.3f}-{iti_max:.3f} s')
+                total_s += 2 * ramp_duration + n_p * ((iti_min + iti_max) / 2.0)
             total_s += max(0, len(conditions) - 1) * condition_rest
 
         mins, secs = divmod(int(total_s), 60)
@@ -537,6 +564,7 @@ def run(
         else:
             elapsed = _run_phase_protocol(
                 _device, conditions, ramp_duration, condition_rest,
+                phase_iti_range,
                 mock_mode, _logger)
 
         # --- Done ---
