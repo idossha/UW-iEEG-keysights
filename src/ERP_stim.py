@@ -23,22 +23,20 @@ MODE = "phase"
 
 # ── Condition library: Phase Stim ────────────────────────────────────────
 #
-# [carrier_freq Hz, amp_ch1 mA, amp_ch2 mA, pulse_width s, num_pulses, pulse_frequency Hz]
+# [carrier_freq Hz, amp_ch1 mA, amp_ch2 mA, pulse_width s, num_pulses]
 #
-# pulse_frequency is kept for backward compatibility and as a fallback
-# fixed interval when PHASE_ITI_RANGE = (None, None).
+# Pulse timing is configured separately with PHASE_ITI_RANGE.
 #
 # Example below:
 # - 8 kHz carrier
 # - 4 mA on each channel
 # - 1 ms burst width
 # - 100 total pulses
-# - 10 Hz fallback pulse repetition
-#1: [5000, 4, 4, 0.001, 100, 10],  # 5 kHz, 1 ms pulses, 100 @ 10 Hz
-#2: [8000, 5, 5, 0.002, 50, 5],  # 8 kHz, 2 ms pulses,  50 @  5 Hz
+#1: [5000, 4, 4, 0.001, 100],  # 5 kHz, 1 ms pulses, 100 total pulses
+#2: [8000, 5, 5, 0.002, 50],   # 8 kHz, 2 ms pulses, 50 total pulses
 
 PHASE_CONDITION_MAP = {
-    1: [8000, 4, 4, 0.001, 1000, 1],
+    1: [8000, 4, 4, 0.001, 1000],
 }
 
 # List the condition keys to run, in order.
@@ -47,7 +45,7 @@ CONDITIONS = [1]
 RAMP_DURATION = 10   # seconds for amplitude ramp-up and ramp-down
 CONDITION_REST = 15  # seconds of rest between conditions
 PHASE_ITI_RANGE = (0.9, 1.1)  # seconds, each interstimulus interval is randomly sampled between min and max
-# Set to (None, None) to fall back to the fixed interval from pulse_frequency.
+# Set to (1.0, 1.0) for a fixed 1-second interval.
 
 # ── Safety ────────────────────────────────────────────────────────────────
 

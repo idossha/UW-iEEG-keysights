@@ -277,13 +277,11 @@ def _run_phase_protocol(dev, conditions, ramp_duration, condition_rest,
     for cond_idx, con in enumerate(conditions):
         cond_num = cond_idx + 1
         proto    = f'{cond_num}/{n_cond}'
-        carrier_freq, a1, a2, pulse_width, num_pulses, pulse_freq = con
+        carrier_freq, a1, a2, pulse_width, num_pulses = con
         n_cycles  = max(1, round(pulse_width * carrier_freq))
         actual_pw = n_cycles / carrier_freq
         target    = [float(a1), float(a2)]
-        iti_min_cfg, iti_max_cfg = phase_iti_range
-        iti_min = (1.0 / pulse_freq) if iti_min_cfg is None else iti_min_cfg
-        iti_max = (1.0 / pulse_freq) if iti_max_cfg is None else iti_max_cfg
+        iti_min, iti_max = phase_iti_range
         train_dur = num_pulses * ((iti_min + iti_max) / 2.0)
         cond_str  = (f'carrier={carrier_freq}Hz a1={a1} a2={a2} '
                      f'pw={actual_pw*1000:.2f}ms {num_pulses}p '
@@ -394,7 +392,7 @@ def run(
     ramp_duration    : seconds for linear amplitude ramp up/down
     stim_duration    : seconds at target amplitude per condition (sine mode only)
     condition_rest   : seconds of rest between conditions
-    phase_iti_range  : `(min_s, max_s)` random interstimulus interval for phase mode
+    phase_iti_range  : `(min_s, max_s)` interstimulus interval range for phase mode
     voltage_limit    : hardware voltage clamp (Volts, ±)
     safety_limit_ma  : abort if any amplitude exceeds this (mA)
     use_pyvisa_py    : True = pyvisa-py backend (macOS/Linux), False = NI-VISA
@@ -421,13 +419,14 @@ def run(
         if len(phase_iti_range) != 2:
             print('\033[1;31m[ABORT] phase_iti_range must be a 2-item sequence: (min_s, max_s).\033[0m')
             sys.exit(1)
-        iti_min_cfg, iti_max_cfg = phase_iti_range
+        iti_min, iti_max = phase_iti_range
+        if iti_min is None or iti_max is None:
+            print('\033[1;31m[ABORT] phase_iti_range must be explicitly set for phase mode.\033[0m')
+            sys.exit(1)
         for i, con in enumerate(conditions):
-            carrier_freq, _, _, pulse_width, num_pulses, pulse_freq = con
+            carrier_freq, _, _, pulse_width, _ = con
             n_cycles = max(1, round(pulse_width * carrier_freq))
             actual_pw = n_cycles / carrier_freq
-            iti_min = (1.0 / pulse_freq) if iti_min_cfg is None else iti_min_cfg
-            iti_max = (1.0 / pulse_freq) if iti_max_cfg is None else iti_max_cfg
             if iti_min <= 0 or iti_max <= 0:
                 print(f'\033[1;31m[ABORT] Condition {i+1}: phase_iti_range values must be > 0.\033[0m')
                 sys.exit(1)
@@ -471,14 +470,12 @@ def run(
             total_s = len(conditions) * (2 * ramp_duration + stim_duration) \
                     + max(0, len(conditions) - 1) * condition_rest
         else:
-            iti_summary_min = phase_iti_range[0] if phase_iti_range[0] is not None else (1.0 / conditions[0][5])
-            iti_summary_max = phase_iti_range[1] if phase_iti_range[1] is not None else (1.0 / conditions[0][5])
+            iti_summary_min, iti_summary_max = phase_iti_range
             print(f'  Ramp        : {ramp_duration} s  |  Rest: {condition_rest} s  |  ITI: {iti_summary_min}-{iti_summary_max} s')
             total_s = 0
             for i, con in enumerate(conditions):
-                carrier, a1, a2, pw, n_p, p_freq = con
-                iti_min = phase_iti_range[0] if phase_iti_range[0] is not None else (1.0 / p_freq)
-                iti_max = phase_iti_range[1] if phase_iti_range[1] is not None else (1.0 / p_freq)
+                carrier, a1, a2, pw, n_p = con
+                iti_min, iti_max = phase_iti_range
                 print(f'  Cond {i+1}      : {carrier} Hz  {a1}/{a2} mA  '
                       f'{n_p} pulses  pw={pw*1000:.2f} ms  iti={iti_min:.3f}-{iti_max:.3f} s')
                 total_s += 2 * ramp_duration + n_p * ((iti_min + iti_max) / 2.0)

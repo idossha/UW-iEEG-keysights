@@ -69,13 +69,16 @@ SINE_CONDITION_MAP = {
 }
 ```
 
-**Phase mode** — `[carrier_freq Hz, amp_ch1 mA, amp_ch2 mA, pulse_width s, num_pulses, pulse_freq Hz]`:
+**Phase mode** — `[carrier_freq Hz, amp_ch1 mA, amp_ch2 mA, pulse_width s, num_pulses]`:
 
 ```python
 PHASE_CONDITION_MAP = {
-    1: [5000, 4, 4, 0.001, 100, 10],  # 5 kHz, 1 ms pulses, 100 @ 10 Hz
+    1: [5000, 4, 4, 0.001, 100],  # 5 kHz, 1 ms pulses, 100 total pulses
 }
 ```
+
+Phase-mode timing is set separately with `PHASE_ITI_RANGE = (min_s, max_s)`.
+Use `(1.0, 1.0)` for a fixed 1-second interval or a span like `(0.9, 1.1)` for jitter.
 
 ### 4. Session
 

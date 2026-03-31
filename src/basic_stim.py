@@ -44,17 +44,17 @@ SINE_CONDITION_MAP = {
 
 # ── Condition library: Phase Stim ───────────────────────────────────────
 #
-# [carrier_freq Hz, amp_ch1 mA, amp_ch2 mA, pulse_width s, num_pulses, pulse_frequency Hz]
+# [carrier_freq Hz, amp_ch1 mA, amp_ch2 mA, pulse_width s, num_pulses]
 #
 # carrier_freq    : base frequency of the sine wave
 # amp_ch1/ch2     : amplitude per channel (mA)
 # pulse_width     : duration of each burst pulse (seconds)
 # num_pulses      : total number of pulses per condition
-# pulse_frequency : pulse repetition rate (Hz)
+# Pulse timing is configured separately with PHASE_ITI_RANGE.
 
 PHASE_CONDITION_MAP = {
-    1: [5000, 4, 4, 0.001, 100, 10],  # 5 kHz, 1 ms pulses, 100 @ 10 Hz
-    2: [8000, 5, 5, 0.002, 50, 5],  # 8 kHz, 2 ms pulses,  50 @  5 Hz
+    1: [5000, 4, 4, 0.001, 100],  # 5 kHz, 1 ms pulses, 100 total pulses
+    2: [8000, 5, 5, 0.002, 50],  # 8 kHz, 2 ms pulses, 50 total pulses
 }
 
 # ── Session ───────────────────────────────────────────────────────────────
@@ -66,6 +66,7 @@ CONDITIONS = [1, 2]
 RAMP_DURATION = 10      # seconds for amplitude ramp-up and ramp-down
 STIM_DURATION = 30      # seconds at target amplitude per condition (sine mode only)
 CONDITION_REST = 15     # seconds of rest between conditions
+PHASE_ITI_RANGE = (0.1, 0.1)  # seconds, used only in phase mode
 
 # ── Safety ────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ if __name__ == "__main__":
         ramp_duration=RAMP_DURATION,
         stim_duration=STIM_DURATION,
         condition_rest=CONDITION_REST,
+        phase_iti_range=PHASE_ITI_RANGE,
         voltage_limit=VOLTAGE_LIMIT,
         safety_limit_ma=SAFETY_LIMIT_MA,
     )
